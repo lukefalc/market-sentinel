@@ -2,5 +2,5 @@
 
 environment: development
 log_level: INFO
-database_url: sqlite:///data/market_sentinel.db
+database_path: data/market_sentinel.duckdb
 report_output_dir: reports
