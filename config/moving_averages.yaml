@@ -1,0 +1,5 @@
+# Moving average windows to calculate later.
+
+moving_averages:
+  short_window_days: 50
+  long_window_days: 200

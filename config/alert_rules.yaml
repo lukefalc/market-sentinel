@@ -1,0 +1,6 @@
+# Alert rules to apply after analytics are implemented.
+
+alerts:
+  moving_average_crossovers: true
+  dividend_yield_threshold_percent: 5.0
+  total_return_threshold_percent: 10.0

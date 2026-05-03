@@ -1,0 +1,9 @@
+# Stock market universes that market-sentinel will analyse.
+
+markets:
+  - name: FTSE 350
+    region: United Kingdom
+    currency: GBP
+  - name: S&P 500
+    region: United States
+    currency: USD

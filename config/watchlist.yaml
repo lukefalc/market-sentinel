@@ -1,0 +1,9 @@
+# Starter watchlist. Replace these examples with the shares you want to track.
+
+watchlist:
+  ftse_350:
+    - HSBA.L
+    - BP.L
+  sp_500:
+    - AAPL
+    - MSFT

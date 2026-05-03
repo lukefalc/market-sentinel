@@ -1,0 +1,6 @@
+# General application settings.
+
+environment: development
+log_level: INFO
+database_url: sqlite:///data/market_sentinel.db
+report_output_dir: reports
