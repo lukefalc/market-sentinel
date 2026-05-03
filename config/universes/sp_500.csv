@@ -1,0 +1,6 @@
+ticker,name,market,region,currency,sector
+AAPL,Apple,S&P 500,United States,USD,Technology
+MSFT,Microsoft,S&P 500,United States,USD,Technology
+JNJ,Johnson & Johnson,S&P 500,United States,USD,Healthcare
+XOM,Exxon Mobil,S&P 500,United States,USD,Energy
+JPM,JPMorgan Chase,S&P 500,United States,USD,Financial Services

@@ -1,0 +1,6 @@
+ticker,name,market,region,currency,sector
+HSBA.L,HSBC Holdings,FTSE 350,United Kingdom,GBP,Financial Services
+BP.L,BP,FTSE 350,United Kingdom,GBP,Energy
+AZN.L,AstraZeneca,FTSE 350,United Kingdom,GBP,Healthcare
+ULVR.L,Unilever,FTSE 350,United Kingdom,GBP,Consumer Defensive
+RIO.L,Rio Tinto,FTSE 350,United Kingdom,GBP,Basic Materials

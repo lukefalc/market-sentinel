@@ -14,6 +14,7 @@ SCHEMA_STATEMENTS = [
         ticker TEXT NOT NULL UNIQUE,
         name TEXT,
         market TEXT NOT NULL,
+        region TEXT,
         currency TEXT,
         sector TEXT,
         industry TEXT,
@@ -115,6 +116,7 @@ def initialise_database_schema(connection: duckdb.DuckDBPyConnection) -> None:
     try:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
+        _ensure_securities_region_column(connection)
     except duckdb.Error as error:
         raise RuntimeError(
             "Could not initialise the DuckDB schema. Check the table definitions "
@@ -125,3 +127,23 @@ def initialise_database_schema(connection: duckdb.DuckDBPyConnection) -> None:
 def initialize_database_schema(connection: duckdb.DuckDBPyConnection) -> None:
     """US spelling alias for ``initialise_database_schema``."""
     initialise_database_schema(connection)
+
+
+def _ensure_securities_region_column(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add the securities.region column for databases created before it existed."""
+    columns = {
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'securities'
+            """
+        ).fetchall()
+    }
+
+    if "region" not in columns:
+        connection.execute("ALTER TABLE securities ADD COLUMN region TEXT")
