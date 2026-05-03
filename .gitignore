@@ -23,8 +23,8 @@ dist/
 *.egg-info/
 
 # Reports and generated data
-data/
-reports/
+/data/
+/reports/
 *.xlsx
 *.pdf
 
