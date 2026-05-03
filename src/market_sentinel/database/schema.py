@@ -91,6 +91,8 @@ SCHEMA_STATEMENTS = [
         dividend_yield DOUBLE,
         annual_dividend_cash_per_10000 DOUBLE,
         total_return DOUBLE,
+        dividend_risk_flag TEXT,
+        dividend_risk_reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (security_id, metric_date)
     )
@@ -236,5 +238,21 @@ def _ensure_dividend_metric_columns(
             """
             ALTER TABLE dividend_metrics
             ADD COLUMN annual_dividend_cash_per_10000 DOUBLE
+            """
+        )
+
+    if "dividend_risk_flag" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE dividend_metrics
+            ADD COLUMN dividend_risk_flag TEXT
+            """
+        )
+
+    if "dividend_risk_reason" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE dividend_metrics
+            ADD COLUMN dividend_risk_reason TEXT
             """
         )
