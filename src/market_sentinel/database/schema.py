@@ -89,6 +89,7 @@ SCHEMA_STATEMENTS = [
         metric_date DATE NOT NULL,
         trailing_annual_dividend DOUBLE,
         dividend_yield DOUBLE,
+        annual_dividend_cash_per_10000 DOUBLE,
         total_return DOUBLE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (security_id, metric_date)
@@ -125,6 +126,7 @@ def initialise_database_schema(connection: duckdb.DuckDBPyConnection) -> None:
             connection.execute(statement)
         _ensure_securities_region_column(connection)
         _ensure_moving_average_signal_columns(connection)
+        _ensure_dividend_metric_columns(connection)
     except duckdb.Error as error:
         raise RuntimeError(
             "Could not initialise the DuckDB schema. Check the table definitions "
@@ -221,3 +223,18 @@ def _get_table_columns(
             [table_name],
         ).fetchall()
     }
+
+
+def _ensure_dividend_metric_columns(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add dividend metric columns for databases created before they existed."""
+    columns = _get_table_columns(connection, "dividend_metrics")
+
+    if "annual_dividend_cash_per_10000" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE dividend_metrics
+            ADD COLUMN annual_dividend_cash_per_10000 DOUBLE
+            """
+        )
