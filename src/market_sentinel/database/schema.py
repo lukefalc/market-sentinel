@@ -68,12 +68,16 @@ SCHEMA_STATEMENTS = [
         signal_date DATE NOT NULL,
         moving_average_period_days INTEGER NOT NULL,
         moving_average_value DOUBLE NOT NULL,
+        comparison_period_days INTEGER,
+        comparison_moving_average_value DOUBLE,
         signal_type TEXT NOT NULL,
+        crossover_direction TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (
             security_id,
             signal_date,
             moving_average_period_days,
+            comparison_period_days,
             signal_type
         )
     )
@@ -172,6 +176,30 @@ def _ensure_moving_average_signal_columns(
             """
             ALTER TABLE moving_average_signals
             ADD COLUMN moving_average_value DOUBLE
+            """
+        )
+
+    if "comparison_period_days" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE moving_average_signals
+            ADD COLUMN comparison_period_days INTEGER
+            """
+        )
+
+    if "comparison_moving_average_value" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE moving_average_signals
+            ADD COLUMN comparison_moving_average_value DOUBLE
+            """
+        )
+
+    if "crossover_direction" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE moving_average_signals
+            ADD COLUMN crossover_direction TEXT
             """
         )
 
