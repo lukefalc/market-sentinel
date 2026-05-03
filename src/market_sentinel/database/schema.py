@@ -66,13 +66,16 @@ SCHEMA_STATEMENTS = [
         signal_id INTEGER PRIMARY KEY,
         security_id INTEGER NOT NULL,
         signal_date DATE NOT NULL,
-        short_window_days INTEGER NOT NULL,
-        long_window_days INTEGER NOT NULL,
-        short_average DOUBLE NOT NULL,
-        long_average DOUBLE NOT NULL,
+        moving_average_period_days INTEGER NOT NULL,
+        moving_average_value DOUBLE NOT NULL,
         signal_type TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (security_id, signal_date, short_window_days, long_window_days)
+        UNIQUE (
+            security_id,
+            signal_date,
+            moving_average_period_days,
+            signal_type
+        )
     )
     """,
     """
@@ -117,6 +120,7 @@ def initialise_database_schema(connection: duckdb.DuckDBPyConnection) -> None:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
         _ensure_securities_region_column(connection)
+        _ensure_moving_average_signal_columns(connection)
     except duckdb.Error as error:
         raise RuntimeError(
             "Could not initialise the DuckDB schema. Check the table definitions "
@@ -147,3 +151,45 @@ def _ensure_securities_region_column(
 
     if "region" not in columns:
         connection.execute("ALTER TABLE securities ADD COLUMN region TEXT")
+
+
+def _ensure_moving_average_signal_columns(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add SMA columns for databases created before the schema was simplified."""
+    columns = _get_table_columns(connection, "moving_average_signals")
+
+    if "moving_average_period_days" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE moving_average_signals
+            ADD COLUMN moving_average_period_days INTEGER
+            """
+        )
+
+    if "moving_average_value" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE moving_average_signals
+            ADD COLUMN moving_average_value DOUBLE
+            """
+        )
+
+
+def _get_table_columns(
+    connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+) -> set:
+    """Return column names for a DuckDB table."""
+    return {
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = ?
+            """,
+            [table_name],
+        ).fetchall()
+    }
