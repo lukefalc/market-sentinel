@@ -48,6 +48,21 @@ def insert_report_data(connection) -> None:
     )
     connection.execute(
         """
+        INSERT INTO securities (
+            security_id,
+            ticker,
+            name,
+            market,
+            region,
+            currency,
+            sector
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [2, "BBB", "Example B", "FTSE 350", "United Kingdom", "GBP", "Energy"],
+    )
+    connection.execute(
+        """
         INSERT INTO daily_prices (
             price_id,
             security_id,
@@ -104,6 +119,45 @@ def insert_report_data(connection) -> None:
             "BULLISH_CROSSOVER",
         ],
     )
+    connection.execute(
+        """
+        INSERT INTO dividend_metrics (
+            metric_id,
+            security_id,
+            metric_date,
+            trailing_annual_dividend,
+            dividend_yield,
+            annual_dividend_cash_per_10000,
+            dividend_risk_flag,
+            dividend_risk_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            1,
+            1,
+            "2026-05-01",
+            2.5,
+            0.08,
+            800.0,
+            "DIVIDEND_TRAP_RISK",
+            "Dividend yield is above 7%.",
+        ],
+    )
+    connection.execute(
+        """
+        INSERT INTO dividend_metrics (
+            metric_id,
+            security_id,
+            metric_date,
+            trailing_annual_dividend,
+            dividend_yield,
+            annual_dividend_cash_per_10000
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [2, 2, "2026-05-01", 1.0, 0.03, 300.0],
+    )
 
 
 def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None:
@@ -131,11 +185,25 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
         "Latest Prices",
         "Moving Averages",
         "Crossover Signals",
+        "Dividend Metrics",
+        "High Dividend Stocks",
+        "Dividend Risk Flags",
     ]
+    summary_values = {
+        workbook["Summary"][f"A{row}"].value: workbook["Summary"][f"B{row}"].value
+        for row in range(1, workbook["Summary"].max_row + 1)
+    }
+
+    assert summary_values["Securities"] == 2
+    assert summary_values["Securities With Dividend Metrics"] == 2
+    assert summary_values["Dividend Risk Flags"] == 1
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Moving Averages"]["A2"].value == "AAA"
     assert workbook["Crossover Signals"]["G2"].value == "BULLISH_CROSSOVER"
+    assert workbook["Dividend Metrics"]["A2"].value == "AAA"
+    assert workbook["High Dividend Stocks"]["A2"].value == "AAA"
+    assert workbook["Dividend Risk Flags"]["E2"].value == "Dividend yield is above 7%."
 
 
 def test_generate_excel_report_creates_output_folder(tmp_path: Path) -> None:
@@ -154,3 +222,26 @@ def test_generate_excel_report_creates_output_folder(tmp_path: Path) -> None:
 
     assert output_dir.exists()
     assert output_path.exists()
+
+
+def test_generate_excel_report_handles_missing_dividend_data(
+    tmp_path: Path,
+) -> None:
+    """Dividend worksheets should still exist when there is no dividend data."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "excel"
+
+    try:
+        output_path = generate_excel_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path)
+
+    assert workbook["Dividend Metrics"].max_row == 1
+    assert workbook["High Dividend Stocks"].max_row == 1
+    assert workbook["Dividend Risk Flags"].max_row == 1

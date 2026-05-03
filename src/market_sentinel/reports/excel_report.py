@@ -56,6 +56,21 @@ def generate_excel_report(
             "Crossover Signals",
             _fetch_crossover_signals(connection),
         )
+        _write_table_sheet(
+            workbook,
+            "Dividend Metrics",
+            _fetch_dividend_metrics(connection),
+        )
+        _write_table_sheet(
+            workbook,
+            "High Dividend Stocks",
+            _fetch_high_dividend_stocks(connection),
+        )
+        _write_table_sheet(
+            workbook,
+            "Dividend Risk Flags",
+            _fetch_dividend_risk_flags(connection),
+        )
 
         workbook.save(output_path)
     except duckdb.Error as error:
@@ -78,6 +93,11 @@ def _write_summary_sheet(sheet, connection: duckdb.DuckDBPyConnection) -> None:
     rows = [
         ("Metric", "Value"),
         ("Securities", _count_rows(connection, "securities")),
+        (
+            "Securities With Dividend Metrics",
+            _count_dividend_metric_securities(connection),
+        ),
+        ("Dividend Risk Flags", _count_dividend_risk_flags(connection)),
         ("Daily Price Rows", _count_rows(connection, "daily_prices")),
         ("Moving Average Rows", _count_rows(connection, "moving_average_signals")),
         ("Latest Price Date", _latest_price_date(connection) or "No prices yet"),
@@ -234,12 +254,134 @@ def _fetch_crossover_signals(
     return headers, rows
 
 
+def _fetch_dividend_metrics(
+    connection: duckdb.DuckDBPyConnection,
+) -> Tuple[List[str], List[Sequence[Any]]]:
+    """Fetch dividend metrics rows."""
+    headers = [
+        "Ticker",
+        "Metric Date",
+        "Trailing 12M Dividend",
+        "Dividend Yield",
+        "Annual Cash Per 10000",
+        "Risk Flag",
+        "Risk Reason",
+    ]
+    rows = connection.execute(
+        """
+        SELECT
+            securities.ticker,
+            metrics.metric_date,
+            metrics.trailing_annual_dividend,
+            metrics.dividend_yield,
+            metrics.annual_dividend_cash_per_10000,
+            metrics.dividend_risk_flag,
+            metrics.dividend_risk_reason
+        FROM dividend_metrics AS metrics
+        INNER JOIN securities
+            ON metrics.security_id = securities.security_id
+        ORDER BY securities.ticker, metrics.metric_date DESC
+        """
+    ).fetchall()
+    return headers, rows
+
+
+def _fetch_high_dividend_stocks(
+    connection: duckdb.DuckDBPyConnection,
+) -> Tuple[List[str], List[Sequence[Any]]]:
+    """Fetch dividend metrics sorted by yield descending."""
+    headers = [
+        "Ticker",
+        "Metric Date",
+        "Dividend Yield",
+        "Trailing 12M Dividend",
+        "Annual Cash Per 10000",
+        "Risk Flag",
+        "Risk Reason",
+    ]
+    rows = connection.execute(
+        """
+        SELECT
+            securities.ticker,
+            metrics.metric_date,
+            metrics.dividend_yield,
+            metrics.trailing_annual_dividend,
+            metrics.annual_dividend_cash_per_10000,
+            metrics.dividend_risk_flag,
+            metrics.dividend_risk_reason
+        FROM dividend_metrics AS metrics
+        INNER JOIN securities
+            ON metrics.security_id = securities.security_id
+        WHERE metrics.dividend_yield IS NOT NULL
+        ORDER BY metrics.dividend_yield DESC, securities.ticker
+        """
+    ).fetchall()
+    return headers, rows
+
+
+def _fetch_dividend_risk_flags(
+    connection: duckdb.DuckDBPyConnection,
+) -> Tuple[List[str], List[Sequence[Any]]]:
+    """Fetch dividend risk flag rows."""
+    headers = [
+        "Ticker",
+        "Metric Date",
+        "Dividend Yield",
+        "Risk Flag",
+        "Risk Reason",
+    ]
+    rows = connection.execute(
+        """
+        SELECT
+            securities.ticker,
+            metrics.metric_date,
+            metrics.dividend_yield,
+            metrics.dividend_risk_flag,
+            metrics.dividend_risk_reason
+        FROM dividend_metrics AS metrics
+        INNER JOIN securities
+            ON metrics.security_id = securities.security_id
+        WHERE metrics.dividend_risk_flag IS NOT NULL
+        ORDER BY metrics.dividend_yield DESC, securities.ticker
+        """
+    ).fetchall()
+    return headers, rows
+
+
 def _count_rows(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:
     """Count rows in a known project table."""
-    if table_name not in {"securities", "daily_prices", "moving_average_signals"}:
+    allowed_tables = {
+        "securities",
+        "daily_prices",
+        "moving_average_signals",
+        "dividend_metrics",
+    }
+
+    if table_name not in allowed_tables:
         raise ValueError(f"Unknown report table: {table_name}")
 
     return connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+
+
+def _count_dividend_metric_securities(connection: duckdb.DuckDBPyConnection) -> int:
+    """Count securities that have at least one dividend metric row."""
+    return connection.execute(
+        """
+        SELECT COUNT(DISTINCT security_id)
+        FROM dividend_metrics
+        """
+    ).fetchone()[0]
+
+
+def _count_dividend_risk_flags(connection: duckdb.DuckDBPyConnection) -> int:
+    """Count dividend metric rows with risk flags."""
+    return connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM dividend_metrics
+        WHERE dividend_risk_flag IS NOT NULL
+        """
+    ).fetchone()[0]
 
 
 def _latest_price_date(connection: duckdb.DuckDBPyConnection) -> Any:
