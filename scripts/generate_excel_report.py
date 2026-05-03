@@ -8,6 +8,8 @@ Run this script from the project root with:
 import sys
 from pathlib import Path
 
+from openpyxl import load_workbook
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 
@@ -16,7 +18,10 @@ if str(SRC_DIR) not in sys.path:
 
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
-from market_sentinel.reports.excel_report import generate_excel_report  # noqa: E402
+from market_sentinel.reports.excel_report import (  # noqa: E402
+    EXPECTED_WORKSHEET_TITLES,
+    generate_excel_report,
+)
 
 
 def main() -> None:
@@ -35,6 +40,23 @@ def main() -> None:
             connection.close()
 
     print(f"Excel report saved: {output_path}")
+    print("Worksheet tabs:")
+    for sheet_name in _read_saved_worksheet_titles(output_path):
+        print(f"- {sheet_name}")
+
+
+def _read_saved_worksheet_titles(output_path: Path) -> list:
+    """Read worksheet titles from the saved Excel workbook."""
+    workbook = load_workbook(output_path, read_only=True)
+    sheet_names = workbook.sheetnames
+
+    if sheet_names != EXPECTED_WORKSHEET_TITLES:
+        raise RuntimeError(
+            "The saved Excel report does not have the expected worksheet tabs. "
+            f"Expected: {EXPECTED_WORKSHEET_TITLES}. Found: {sheet_names}."
+        )
+
+    return sheet_names
 
 
 if __name__ == "__main__":

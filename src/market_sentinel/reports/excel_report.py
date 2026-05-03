@@ -14,6 +14,16 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "excel"
+EXPECTED_WORKSHEET_TITLES = [
+    "Summary",
+    "Securities",
+    "Latest Prices",
+    "Moving Averages",
+    "Crossover Signals",
+    "Dividend Metrics",
+    "High Dividend Stocks",
+    "Dividend Risk Flags",
+]
 
 HEADER_FILL = PatternFill(
     fill_type="solid",
@@ -41,36 +51,22 @@ def generate_excel_report(
     try:
         workbook = Workbook()
         summary_sheet = workbook.active
-        summary_sheet.title = "Summary"
+        summary_sheet.title = EXPECTED_WORKSHEET_TITLES[0]
 
         _write_summary_sheet(summary_sheet, connection)
-        _write_table_sheet(workbook, "Securities", _fetch_securities(connection))
-        _write_table_sheet(workbook, "Latest Prices", _fetch_latest_prices(connection))
-        _write_table_sheet(
-            workbook,
-            "Moving Averages",
-            _fetch_moving_averages(connection),
-        )
-        _write_table_sheet(
-            workbook,
-            "Crossover Signals",
-            _fetch_crossover_signals(connection),
-        )
-        _write_table_sheet(
-            workbook,
-            "Dividend Metrics",
-            _fetch_dividend_metrics(connection),
-        )
-        _write_table_sheet(
-            workbook,
-            "High Dividend Stocks",
-            _fetch_high_dividend_stocks(connection),
-        )
-        _write_table_sheet(
-            workbook,
-            "Dividend Risk Flags",
-            _fetch_dividend_risk_flags(connection),
-        )
+
+        report_sections = [
+            ("Securities", _fetch_securities),
+            ("Latest Prices", _fetch_latest_prices),
+            ("Moving Averages", _fetch_moving_averages),
+            ("Crossover Signals", _fetch_crossover_signals),
+            ("Dividend Metrics", _fetch_dividend_metrics),
+            ("High Dividend Stocks", _fetch_high_dividend_stocks),
+            ("Dividend Risk Flags", _fetch_dividend_risk_flags),
+        ]
+
+        for sheet_title, fetch_data in report_sections:
+            _write_table_sheet(workbook, sheet_title, fetch_data(connection))
 
         workbook.save(output_path)
     except duckdb.Error as error:

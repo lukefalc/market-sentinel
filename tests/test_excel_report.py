@@ -5,9 +5,13 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from scripts import generate_excel_report as generate_excel_report_script
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
-from market_sentinel.reports.excel_report import generate_excel_report
+from market_sentinel.reports.excel_report import (
+    EXPECTED_WORKSHEET_TITLES,
+    generate_excel_report,
+)
 
 
 def write_settings(config_dir: Path, database_path: Path) -> None:
@@ -179,16 +183,7 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
 
     assert output_path == output_dir / "market_sentinel_report_2026-05-03.xlsx"
     assert output_path.exists()
-    assert workbook.sheetnames == [
-        "Summary",
-        "Securities",
-        "Latest Prices",
-        "Moving Averages",
-        "Crossover Signals",
-        "Dividend Metrics",
-        "High Dividend Stocks",
-        "Dividend Risk Flags",
-    ]
+    assert workbook.sheetnames == EXPECTED_WORKSHEET_TITLES
     summary_values = {
         workbook["Summary"][f"A{row}"].value: workbook["Summary"][f"B{row}"].value
         for row in range(1, workbook["Summary"].max_row + 1)
@@ -245,3 +240,41 @@ def test_generate_excel_report_handles_missing_dividend_data(
     assert workbook["Dividend Metrics"].max_row == 1
     assert workbook["High Dividend Stocks"].max_row == 1
     assert workbook["Dividend Risk Flags"].max_row == 1
+
+
+def test_generate_excel_report_script_uses_updated_report_code(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The script path should produce a workbook with all expected worksheets."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "excel"
+
+    def fake_open_connection():
+        return connection
+
+    def fake_generate_report(connection_arg):
+        return generate_excel_report(
+            connection_arg,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+        )
+
+    monkeypatch.setattr(
+        generate_excel_report_script,
+        "open_duckdb_connection",
+        fake_open_connection,
+    )
+    monkeypatch.setattr(
+        generate_excel_report_script,
+        "generate_excel_report",
+        fake_generate_report,
+    )
+
+    insert_report_data(connection)
+    generate_excel_report_script.main()
+
+    output_path = output_dir / "market_sentinel_report_2026-05-03.xlsx"
+    workbook = load_workbook(output_path)
+
+    assert workbook.sheetnames == EXPECTED_WORKSHEET_TITLES
