@@ -6,11 +6,11 @@ returns their contents as Python dictionaries.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 import yaml
 
-CONFIG_FILES = {
+CONFIG_FILES: Dict[str, str] = {
     "settings": "settings.yaml",
     "markets": "markets.yaml",
     "moving_averages": "moving_averages.yaml",
@@ -25,7 +25,7 @@ def default_config_dir() -> Path:
     return project_root / "config"
 
 
-def load_yaml_config(file_path: Path) -> dict[str, Any]:
+def load_yaml_config(file_path: Path) -> Dict[str, Any]:
     """Load one YAML config file and return it as a dictionary.
 
     Args:
@@ -64,7 +64,10 @@ def load_yaml_config(file_path: Path) -> dict[str, Any]:
     return config
 
 
-def load_named_config(name: str, config_dir: Path | None = None) -> dict[str, Any]:
+def load_named_config(
+    name: str,
+    config_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Load one known project config by name.
 
     Args:
@@ -79,7 +82,9 @@ def load_named_config(name: str, config_dir: Path | None = None) -> dict[str, An
     return load_yaml_config(base_dir / CONFIG_FILES[name])
 
 
-def load_all_configs(config_dir: Path | None = None) -> dict[str, dict[str, Any]]:
+def load_all_configs(
+    config_dir: Optional[Path] = None,
+) -> Dict[str, Dict[str, Any]]:
     """Load all project YAML configs into one dictionary."""
     base_dir = Path(config_dir) if config_dir is not None else default_config_dir()
 

@@ -6,13 +6,14 @@ folder automatically when needed.
 """
 
 from pathlib import Path
+from typing import Optional
 
 import duckdb
 
 from market_sentinel.config.loader import default_config_dir, load_named_config
 
 
-def get_database_path(config_dir: Path | None = None) -> Path:
+def get_database_path(config_dir: Optional[Path] = None) -> Path:
     """Return the configured DuckDB database path.
 
     Args:
@@ -42,7 +43,9 @@ def get_database_path(config_dir: Path | None = None) -> Path:
     return path
 
 
-def open_duckdb_connection(config_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
+def open_duckdb_connection(
+    config_dir: Optional[Path] = None,
+) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection using the configured database path.
 
     The database file is created by DuckDB if it does not already exist.

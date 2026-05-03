@@ -7,7 +7,7 @@ name = "market-sentinel"
 version = "0.1.0"
 description = "Beginner-friendly stock analysis project for FTSE 350 and S&P 500 shares."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 authors = [
   { name = "market-sentinel contributors" }
 ]
@@ -37,7 +37,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

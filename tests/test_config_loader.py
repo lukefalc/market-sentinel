@@ -9,7 +9,7 @@ from market_sentinel.config.loader import CONFIG_FILES, load_all_configs
 
 def write_config_files(config_dir: Path, content: str = "enabled: true\n") -> None:
     """Write all required config files for loader tests."""
-    config_dir.mkdir()
+    config_dir.mkdir(parents=True, exist_ok=True)
 
     for file_name in CONFIG_FILES.values():
         (config_dir / file_name).write_text(content, encoding="utf-8")
