@@ -13,6 +13,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from market_sentinel.analytics.crossovers import (
+    DEFAULT_CROSSOVER_RECENT_DAYS,
+    describe_crossover,
+    format_days_since_crossover,
+)
 from market_sentinel.config.loader import load_named_config
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "excel"
@@ -25,6 +30,7 @@ EXPECTED_WORKSHEET_TITLES = [
     "Latest Prices",
     "Moving Averages",
     "Recent Moving Averages",
+    "Recent Crossovers",
     "Crossover Signals",
     "Dividend Metrics",
     "High Dividend Stocks",
@@ -51,9 +57,10 @@ def generate_excel_report(
     config_dir: Optional[Path] = None,
 ) -> Path:
     """Generate an Excel report from the local DuckDB database."""
+    selected_date = report_date or date.today()
     settings = _load_excel_settings(config_dir)
     target_dir = _resolve_excel_output_dir(output_dir, settings)
-    output_path = target_dir / default_report_filename(report_date)
+    output_path = target_dir / default_report_filename(selected_date)
     max_rows_per_sheet = _positive_int_setting(
         settings,
         "excel_max_rows_per_sheet",
@@ -64,6 +71,11 @@ def generate_excel_report(
         settings,
         "excel_moving_average_recent_days",
         DEFAULT_MOVING_AVERAGE_RECENT_DAYS,
+    )
+    crossover_recent_days = _positive_int_setting(
+        settings,
+        "crossover_recent_days",
+        DEFAULT_CROSSOVER_RECENT_DAYS,
     )
 
     try:
@@ -85,10 +97,19 @@ def generate_excel_report(
                 ),
             ),
             (
+                "Recent Crossovers",
+                lambda report_connection: _fetch_crossover_signals(
+                    report_connection,
+                    selected_date,
+                    crossover_recent_days,
+                ),
+            ),
+            (
                 "Crossover Signals",
                 lambda report_connection: _fetch_crossover_signals(
                     report_connection,
-                    recent_days,
+                    selected_date,
+                    None,
                 ),
             ),
             ("Dividend Metrics", _fetch_dividend_metrics),
@@ -371,47 +392,70 @@ def _fetch_recent_moving_averages(
 
 def _fetch_crossover_signals(
     connection: duckdb.DuckDBPyConnection,
-    recent_days: int,
+    report_date: date,
+    recent_days: Optional[int],
 ) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch recent actual crossover signal rows."""
+    """Fetch crossover signal rows, optionally filtered to a recent window."""
     headers = [
         "Ticker",
-        "Signal Date",
-        "Short Period",
-        "Short SMA",
-        "Long Period",
-        "Long SMA",
-        "Direction",
+        "Company Name",
+        "Market",
+        "Signal Direction",
+        "Signal Description",
+        "Crossover Date",
+        "Days Since Crossover",
     ]
-    latest_signal_date = _latest_signal_date(
-        connection,
-        ("BULLISH_CROSSOVER", "BEARISH_CROSSOVER"),
-    )
+    filters = ["signals.signal_type IN ('BULLISH_CROSSOVER', 'BEARISH_CROSSOVER')"]
+    parameters: List[Any] = []
 
-    if latest_signal_date is None:
-        return headers, []
+    if recent_days is not None:
+        filters.append("signals.signal_date >= ?")
+        filters.append("signals.signal_date <= ?")
+        parameters.extend(
+            [
+                report_date - timedelta(days=recent_days),
+                report_date,
+            ]
+        )
 
-    cutoff_date = latest_signal_date - timedelta(days=recent_days - 1)
+    where_clause = " AND ".join(filters)
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            securities.name,
+            securities.market,
             signals.signal_date,
             signals.moving_average_period_days,
-            signals.moving_average_value,
             signals.comparison_period_days,
-            signals.comparison_moving_average_value,
             signals.crossover_direction
         FROM moving_average_signals AS signals
         INNER JOIN securities
             ON signals.security_id = securities.security_id
-        WHERE signals.signal_type IN ('BULLISH_CROSSOVER', 'BEARISH_CROSSOVER')
-          AND signals.signal_date >= ?
-        ORDER BY signals.signal_date DESC, securities.ticker
+        WHERE {where_clause}
+        ORDER BY
+            CASE
+                WHEN signals.signal_type = 'BULLISH_CROSSOVER' THEN 0
+                ELSE 1
+            END,
+            signals.signal_date DESC,
+            securities.ticker
         """,
-        [cutoff_date],
+        parameters,
     ).fetchall()
-    return headers, rows
+    formatted_rows = [
+        (
+            row[0],
+            row[1],
+            row[2],
+            _friendly_direction(row[6]),
+            describe_crossover(row[4], row[5], row[6]),
+            row[3],
+            format_days_since_crossover(row[3], report_date),
+        )
+        for row in rows
+    ]
+    return headers, formatted_rows
 
 
 def _fetch_dividend_metrics(
@@ -444,6 +488,17 @@ def _fetch_dividend_metrics(
         """
     ).fetchall()
     return headers, rows
+
+
+def _friendly_direction(crossover_direction: Any) -> str:
+    """Return a readable crossover direction label."""
+    if crossover_direction == "BULLISH_CROSSOVER":
+        return "Bullish"
+
+    if crossover_direction == "BEARISH_CROSSOVER":
+        return "Bearish"
+
+    return str(crossover_direction or "")
 
 
 def _fetch_high_dividend_stocks(

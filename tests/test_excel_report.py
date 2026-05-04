@@ -148,6 +148,60 @@ def insert_report_data(connection) -> None:
     )
     connection.execute(
         """
+        INSERT INTO moving_average_signals (
+            signal_id,
+            security_id,
+            signal_date,
+            moving_average_period_days,
+            moving_average_value,
+            comparison_period_days,
+            comparison_moving_average_value,
+            signal_type,
+            crossover_direction
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            4,
+            2,
+            "2026-04-20",
+            7,
+            9.0,
+            30,
+            10.0,
+            "BEARISH_CROSSOVER",
+            "BEARISH_CROSSOVER",
+        ],
+    )
+    connection.execute(
+        """
+        INSERT INTO moving_average_signals (
+            signal_id,
+            security_id,
+            signal_date,
+            moving_average_period_days,
+            moving_average_value,
+            comparison_period_days,
+            comparison_moving_average_value,
+            signal_type,
+            crossover_direction
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            3,
+            2,
+            "2026-05-01",
+            7,
+            9.5,
+            30,
+            10.0,
+            "BEARISH_CROSSOVER",
+            "BEARISH_CROSSOVER",
+        ],
+    )
+    connection.execute(
+        """
         INSERT INTO dividend_metrics (
             metric_id,
             security_id,
@@ -219,7 +273,24 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Moving Averages"]["A2"].value == "AAA"
     assert workbook["Recent Moving Averages"]["A2"].value == "AAA"
-    assert workbook["Crossover Signals"]["G2"].value == "BULLISH_CROSSOVER"
+    assert workbook["Recent Crossovers"]["A2"].value == "AAA"
+    assert workbook["Recent Crossovers"]["D2"].value == "Bullish"
+    assert workbook["Recent Crossovers"]["A3"].value == "BBB"
+    assert workbook["Recent Crossovers"].max_row == 3
+    assert workbook["Crossover Signals"]["D2"].value == "Bullish"
+    assert (
+        workbook["Crossover Signals"]["E2"].value
+        == "7-day trend line crossed above 30-day trend line"
+    )
+    assert workbook["Crossover Signals"]["F2"].value.date() == date(2026, 5, 1)
+    assert workbook["Crossover Signals"]["G2"].value == "2 days ago"
+    assert workbook["Crossover Signals"]["A3"].value == "BBB"
+    assert workbook["Crossover Signals"]["D3"].value == "Bearish"
+    assert (
+        workbook["Crossover Signals"]["E3"].value
+        == "7-day trend line crossed below 30-day trend line"
+    )
+    assert workbook["Crossover Signals"]["G4"].value == "13 days ago"
     assert workbook["Dividend Metrics"]["A2"].value == "AAA"
     assert workbook["High Dividend Stocks"]["A2"].value == "AAA"
     assert workbook["Dividend Risk Flags"]["E2"].value == "Dividend yield is above 7%."

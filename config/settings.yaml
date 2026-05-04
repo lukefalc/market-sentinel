@@ -14,9 +14,21 @@ dividend_retry_batch_size: 5
 moving_average_history_days: 260
 excel_max_rows_per_sheet: 50000
 excel_moving_average_recent_days: 10
+crossover_recent_days: 7
+chart_lookback_days: 180
+chart_max_tickers: 50
+chart_show_close_price: true
+chart_close_price_style: dotted
+chart_close_price_color: black
+chart_close_price_linewidth: 1
+chart_include_sma_periods:
+  - 7
+  - 30
+  - 50
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF
+  chart_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Charts
 email_alerts:
   settings_source: environment_variables
   sends_automatically_from_daily_process: false

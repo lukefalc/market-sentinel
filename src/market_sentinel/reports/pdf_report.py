@@ -2,17 +2,28 @@
 
 from datetime import date
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import duckdb
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    Image,
+    KeepTogether,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from market_sentinel.config.loader import load_named_config
+from market_sentinel.reports.charts import generate_charts
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pdf"
+LANDSCAPE_PAGE_SIZE = landscape(A4)
 
 
 def default_report_filename(report_date: Optional[date] = None) -> str:
@@ -29,15 +40,20 @@ def generate_pdf_report(
 ) -> Path:
     """Generate a simple daily PDF summary report."""
     selected_date = report_date or date.today()
-    target_dir = _resolve_pdf_output_dir(output_dir, config_dir)
+    settings = _load_pdf_settings(config_dir)
+    target_dir = _resolve_pdf_output_dir(output_dir, settings)
     output_path = target_dir / default_report_filename(selected_date)
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        story = _build_report_story(connection, selected_date)
+        chart_summary = generate_charts(connection, config_dir=config_dir)
+        story = _build_report_story(
+            selected_date,
+            chart_summary,
+        )
         document = SimpleDocTemplate(
             str(output_path),
-            pagesize=A4,
+            pagesize=LANDSCAPE_PAGE_SIZE,
             rightMargin=36,
             leftMargin=36,
             topMargin=36,
@@ -60,16 +76,11 @@ def generate_pdf_report(
 
 def _resolve_pdf_output_dir(
     output_dir: Optional[Path],
-    config_dir: Optional[Path],
+    settings: Dict[str, Any],
 ) -> Path:
     """Resolve the PDF output directory from arguments, settings, or fallback."""
     if output_dir is not None:
         return Path(output_dir).expanduser()
-
-    try:
-        settings = load_named_config("settings", config_dir)
-    except FileNotFoundError:
-        return DEFAULT_OUTPUT_DIR
 
     configured_dir = settings.get("report_outputs", {}).get("pdf_dir")
 
@@ -79,209 +90,181 @@ def _resolve_pdf_output_dir(
     return DEFAULT_OUTPUT_DIR
 
 
+def _load_pdf_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
+    """Load PDF settings, falling back to defaults if settings are unavailable."""
+    try:
+        return load_named_config("settings", config_dir)
+    except FileNotFoundError:
+        return {}
+
+
 def _build_report_story(
-    connection: duckdb.DuckDBPyConnection,
     report_date: date,
+    chart_summary: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Build reportlab flowables for the PDF."""
     styles = getSampleStyleSheet()
-    story = [
-        Paragraph("Market Sentinel Daily Summary", styles["Title"]),
-        Paragraph(f"Report date: {report_date.isoformat()}", styles["Normal"]),
-        Spacer(1, 12),
-    ]
-
-    sections = [
-        ("Summary Counts", _summary_counts(connection)),
-        ("Top High-Dividend Stocks", _top_high_dividend_stocks(connection)),
-        ("Dividend Risk Flags", _dividend_risk_flags(connection)),
-        ("Latest Moving Average Values", _latest_moving_averages(connection)),
-        ("Crossover Signals", _crossover_signals(connection)),
-    ]
-
-    for title, table_data in sections:
-        story.append(Paragraph(title, styles["Heading2"]))
-        story.append(_make_table(*table_data))
-        story.append(Spacer(1, 12))
-
+    chart_summary = chart_summary or {}
+    story = _index_page_flowables(chart_summary, report_date, styles)
+    story.extend(_chart_flowables(chart_summary, styles, include_initial_break=True))
     return story
 
 
-def _make_table(headers: Sequence[Any], rows: Sequence[Sequence[Any]]) -> Table:
-    """Create a compact reportlab table."""
-    display_rows = [headers] + [_format_row(row) for row in rows]
+def _index_page_flowables(
+    chart_summary: Dict[str, Any],
+    report_date: date,
+    styles,
+) -> List[Any]:
+    """Build the first-page index of selected chart stocks."""
+    return [
+        Paragraph("Market Sentinel Crossover Chart Report", styles["Title"]),
+        Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
+        Spacer(1, 8),
+        Paragraph(
+            "Stocks shown below are the latest crossover signals selected for "
+            "chart review.",
+            styles["Normal"],
+        ),
+        Spacer(1, 12),
+        _index_tables(chart_summary.get("chart_details", [])),
+    ]
 
-    if not rows:
-        display_rows.append(["No data available"] + [""] * (len(headers) - 1))
 
-    table = Table(display_rows, repeatRows=1)
+def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
+    """Return two side-by-side compact index tables."""
+    left_rows = _index_rows(chart_details[:25])
+    right_rows = _index_rows(chart_details[25:50])
+    index_table = Table(
+        [[_compact_index_table(left_rows), _compact_index_table(right_rows)]],
+        colWidths=[370, 370],
+    )
+    index_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    return index_table
+
+
+def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
+    """Return one compact index table for up to 25 stocks."""
+    headers = ["Ticker", "Name", "Direction", "Crossed", "Days"]
+    table = Table([headers] + list(rows), colWidths=[48, 135, 55, 70, 62])
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9EAF7")),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                ("FONTSIZE", (0, 0), (-1, -1), 6.6),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
             ]
         )
     )
     return table
 
 
-def _format_row(row: Sequence[Any]) -> List[Any]:
-    """Format common values for display."""
-    return [_format_value(value) for value in row]
+def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
+    """Return compact index rows in the same order as the chart pages."""
+    rows = []
+
+    for chart_detail in chart_details:
+        first_signal = (chart_detail.get("signals") or [{}])[0]
+        crossover_date = first_signal.get("crossover_date", "")
+        if hasattr(crossover_date, "isoformat"):
+            crossover_date = crossover_date.isoformat()
+
+        rows.append(
+            [
+                chart_detail.get("ticker", ""),
+                _shorten_name(chart_detail.get("company_name", "")),
+                first_signal.get("direction", ""),
+                crossover_date,
+                first_signal.get("days_since_crossover", ""),
+            ]
+        )
+
+    return rows
 
 
-def _format_value(value: Any) -> Any:
-    """Format one value for PDF output."""
-    if value is None:
-        return ""
+def _shorten_name(name: str, max_length: int = 28) -> str:
+    """Shorten a company name for the compact PDF index."""
+    if len(name) <= max_length:
+        return name
 
-    if isinstance(value, float):
-        return round(value, 4)
-
-    return value
+    return f"{name[: max_length - 3]}..."
 
 
-def _summary_counts(
-    connection: duckdb.DuckDBPyConnection,
-) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch summary counts for the PDF."""
-    rows = [
-        ("Securities", _count_rows(connection, "securities")),
-        ("Latest Prices", _count_latest_prices(connection)),
-        ("Moving Average Values", _count_rows(connection, "moving_average_signals")),
-        ("Dividend Metric Rows", _count_rows(connection, "dividend_metrics")),
-        ("Dividend Risk Flags", _count_dividend_risk_flags(connection)),
-    ]
-    return ["Metric", "Value"], rows
+def _chart_flowables(
+    chart_summary: Dict[str, Any],
+    styles,
+    include_initial_break: bool = True,
+) -> List[Any]:
+    """Build the selected trend chart section."""
+    flowables: List[Any] = []
+    chart_details = chart_summary.get("chart_details", [])
+
+    if not chart_details:
+        flowables.append(Paragraph("No recent crossover charts to show.", styles["Heading2"]))
+        flowables.append(Spacer(1, 12))
+        return flowables
+
+    if include_initial_break:
+        flowables.append(PageBreak())
+
+    for index, chart_detail in enumerate(chart_details):
+        path = Path(chart_detail["chart_path"])
+        chart_group = [
+            Paragraph(_chart_title(chart_detail), styles["Heading2"]),
+            Image(str(path), width=760, height=395, kind="proportional"),
+            Spacer(1, 10),
+            Paragraph(_selection_reason_text(chart_detail), styles["Normal"]),
+            Spacer(1, 12),
+        ]
+        flowables.append(KeepTogether(chart_group))
+        if index < len(chart_details) - 1:
+            flowables.append(PageBreak())
+
+    return flowables
 
 
-def _top_high_dividend_stocks(
-    connection: duckdb.DuckDBPyConnection,
-) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch top dividend-yield rows."""
-    rows = connection.execute(
-        """
-        SELECT
-            securities.ticker,
-            metrics.metric_date,
-            metrics.dividend_yield,
-            metrics.trailing_annual_dividend,
-            metrics.dividend_risk_flag
-        FROM dividend_metrics AS metrics
-        INNER JOIN securities
-            ON metrics.security_id = securities.security_id
-        WHERE metrics.dividend_yield IS NOT NULL
-        ORDER BY metrics.dividend_yield DESC, securities.ticker
-        LIMIT 10
-        """
-    ).fetchall()
-    return ["Ticker", "Date", "Yield", "Trailing Dividend", "Risk Flag"], rows
+def _chart_title(chart_detail: Dict[str, Any]) -> str:
+    """Return a clear chart page title."""
+    ticker = chart_detail.get("ticker", "")
+    company_name = chart_detail.get("company_name", "")
+    market = chart_detail.get("market", "")
+    title = ticker
+
+    if company_name:
+        title = f"{title} - {company_name}"
+    if market:
+        title = f"{title} ({market})"
+
+    return title
 
 
-def _dividend_risk_flags(
-    connection: duckdb.DuckDBPyConnection,
-) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch dividend risk flags."""
-    rows = connection.execute(
-        """
-        SELECT
-            securities.ticker,
-            metrics.metric_date,
-            metrics.dividend_yield,
-            metrics.dividend_risk_reason
-        FROM dividend_metrics AS metrics
-        INNER JOIN securities
-            ON metrics.security_id = securities.security_id
-        WHERE metrics.dividend_risk_flag IS NOT NULL
-        ORDER BY metrics.dividend_yield DESC, securities.ticker
-        LIMIT 10
-        """
-    ).fetchall()
-    return ["Ticker", "Date", "Yield", "Reason"], rows
+def _selection_reason_text(chart_detail: Dict[str, Any]) -> str:
+    """Return the reason text shown below a chart."""
+    signals = chart_detail.get("signals", [])
 
+    if not signals:
+        return "Selected because: this ticker was requested for chart generation."
 
-def _latest_moving_averages(
-    connection: duckdb.DuckDBPyConnection,
-) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch latest moving average values."""
-    rows = connection.execute(
-        """
-        SELECT
-            securities.ticker,
-            signals.signal_date,
-            signals.moving_average_period_days,
-            signals.moving_average_value
-        FROM moving_average_signals AS signals
-        INNER JOIN securities
-            ON signals.security_id = securities.security_id
-        WHERE signals.signal_type = 'SMA'
-        ORDER BY signals.signal_date DESC,
-                 securities.ticker,
-                 signals.moving_average_period_days
-        LIMIT 20
-        """
-    ).fetchall()
-    return ["Ticker", "Date", "Period", "SMA"], rows
+    reasons = []
+    for signal in signals:
+        reasons.append(
+            "Selected because: "
+            f"{signal['trend_description']} on "
+            f"{signal['crossover_date'].isoformat()} — "
+            f"{signal['days_since_crossover']}."
+        )
 
-
-def _crossover_signals(
-    connection: duckdb.DuckDBPyConnection,
-) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch crossover signals."""
-    rows = connection.execute(
-        """
-        SELECT
-            securities.ticker,
-            signals.signal_date,
-            signals.moving_average_period_days,
-            signals.comparison_period_days,
-            signals.crossover_direction
-        FROM moving_average_signals AS signals
-        INNER JOIN securities
-            ON signals.security_id = securities.security_id
-        WHERE signals.signal_type IN ('BULLISH_CROSSOVER', 'BEARISH_CROSSOVER')
-        ORDER BY signals.signal_date DESC, securities.ticker
-        LIMIT 20
-        """
-    ).fetchall()
-    return ["Ticker", "Date", "Short", "Long", "Direction"], rows
-
-
-def _count_rows(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:
-    """Count rows in a known report table."""
-    allowed_tables = {
-        "securities",
-        "moving_average_signals",
-        "dividend_metrics",
-    }
-
-    if table_name not in allowed_tables:
-        raise ValueError(f"Unknown report table: {table_name}")
-
-    return connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-
-
-def _count_latest_prices(connection: duckdb.DuckDBPyConnection) -> int:
-    """Count securities with at least one daily price."""
-    return connection.execute(
-        """
-        SELECT COUNT(DISTINCT security_id)
-        FROM daily_prices
-        """
-    ).fetchone()[0]
-
-
-def _count_dividend_risk_flags(connection: duckdb.DuckDBPyConnection) -> int:
-    """Count dividend risk flags."""
-    return connection.execute(
-        """
-        SELECT COUNT(*)
-        FROM dividend_metrics
-        WHERE dividend_risk_flag IS NOT NULL
-        """
-    ).fetchone()[0]
+    return "<br/>".join(reasons)

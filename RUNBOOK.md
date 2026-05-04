@@ -101,6 +101,27 @@ This runs the daily steps in order:
 Email is safe by default. If email alerts are disabled, the project prints a
 friendly message and does not send anything.
 
+The PDF report is the main daily report to read. It is chart-led: each selected
+stock gets one landscape page with a trend chart and a short explanation of why
+that stock was selected. The first page is a compact index of the stocks
+included in the chart report.
+
+The PDF selects stocks with moving-average crossovers from the past 7 days,
+up to the configured chart limit. The Excel workbook keeps the fuller crossover
+history and detailed data tables for deeper checking.
+
+Charts can also be generated separately when you want the supporting picture
+files:
+
+```bash
+PYTHONPATH=src python3 scripts/generate_charts.py
+```
+
+By default, charts are kept simple: they show close price as a thin black dotted
+line plus the 7-day, 30-day, and 50-day moving averages over the last 180 days.
+The project limits chart generation to 50 tickers, prioritised by the most
+recent crossover date.
+
 Market data has two modes.
 
 Daily update mode is for normal daily runs. It downloads only recent prices:
@@ -217,6 +238,12 @@ PDF reports are saved here:
 ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF
 ```
 
+Supporting chart images are saved here:
+
+```text
+~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Charts
+```
+
 The `~` means your home folder. On a Mac, that is usually:
 
 ```text
@@ -228,6 +255,7 @@ If OneDrive is not available, the project falls back to local output folders:
 ```text
 outputs/excel
 outputs/pdf
+outputs/charts
 ```
 
 ## If GitHub Desktop Shows Changes
@@ -368,6 +396,12 @@ Run the full daily process:
 
 ```bash
 PYTHONPATH=src python3 scripts/run_daily_process.py
+```
+
+Generate chart images:
+
+```bash
+PYTHONPATH=src python3 scripts/generate_charts.py
 ```
 
 Update S&P 500, load the universe, then run the daily process:

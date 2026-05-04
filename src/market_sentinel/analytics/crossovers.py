@@ -5,6 +5,7 @@ ticker. It stores detected bullish and bearish crossover events in the
 ``moving_average_signals`` table without generating reports.
 """
 
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -14,6 +15,7 @@ from market_sentinel.config.loader import load_named_config
 from market_sentinel.data.price_loader import get_active_securities
 
 DEFAULT_CROSSOVER_PAIRS = [(50, 200)]
+DEFAULT_CROSSOVER_RECENT_DAYS = 7
 
 
 def load_crossover_pairs(config_dir: Optional[Path] = None) -> List[Tuple[int, int]]:
@@ -46,6 +48,29 @@ def load_crossover_pairs(config_dir: Optional[Path] = None) -> List[Tuple[int, i
     return pairs
 
 
+def load_crossover_recent_days(config_dir: Optional[Path] = None) -> int:
+    """Read the recent crossover scan window from ``config/settings.yaml``."""
+    try:
+        settings = load_named_config("settings", config_dir)
+    except FileNotFoundError:
+        return DEFAULT_CROSSOVER_RECENT_DAYS
+
+    raw_recent_days = settings.get(
+        "crossover_recent_days",
+        DEFAULT_CROSSOVER_RECENT_DAYS,
+    )
+
+    try:
+        recent_days = int(raw_recent_days)
+    except (TypeError, ValueError):
+        return DEFAULT_CROSSOVER_RECENT_DAYS
+
+    if recent_days < 1:
+        return DEFAULT_CROSSOVER_RECENT_DAYS
+
+    return recent_days
+
+
 def detect_crossover(
     previous_short: float,
     previous_long: float,
@@ -60,6 +85,54 @@ def detect_crossover(
         return "BEARISH_CROSSOVER"
 
     return None
+
+
+def describe_crossover(
+    short_period: int,
+    long_period: int,
+    crossover_direction: str,
+) -> str:
+    """Return a beginner-friendly crossover description."""
+    if crossover_direction == "BULLISH_CROSSOVER":
+        action = "crossed above"
+    elif crossover_direction == "BEARISH_CROSSOVER":
+        action = "crossed below"
+    else:
+        action = "crossed"
+
+    return (
+        f"{short_period}-day trend line {action} "
+        f"{long_period}-day trend line"
+    )
+
+
+def days_since_crossover(crossover_date: Any, report_date: Any) -> int:
+    """Return whole days between a crossover date and the report date."""
+    crossover_day = _to_date(crossover_date)
+    report_day = _to_date(report_date)
+    return max((report_day - crossover_day).days, 0)
+
+
+def format_days_since_crossover(crossover_date: Any, report_date: Any) -> str:
+    """Return a friendly age label for a crossover signal."""
+    days_since = days_since_crossover(crossover_date, report_date)
+
+    if days_since == 0:
+        return "Today"
+
+    if days_since == 1:
+        return "1 day ago"
+
+    return f"{days_since} days ago"
+
+
+def is_recent_crossover(
+    crossover_date: Any,
+    report_date: Any,
+    recent_days: int = DEFAULT_CROSSOVER_RECENT_DAYS,
+) -> bool:
+    """Return True when a crossover happened within the recent report window."""
+    return days_since_crossover(crossover_date, report_date) <= recent_days
 
 
 def get_latest_sma_pair_values(
@@ -106,6 +179,52 @@ def get_latest_sma_pair_values(
             "long_value": row[2],
         }
         for row in reversed(rows)
+    ]
+
+
+def get_sma_pair_history(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+    short_period: int,
+    long_period: int,
+) -> List[Dict[str, Any]]:
+    """Read all dates where both short and long SMA values are available."""
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                short_sma.signal_date,
+                short_sma.moving_average_value,
+                long_sma.moving_average_value
+            FROM moving_average_signals AS short_sma
+            INNER JOIN moving_average_signals AS long_sma
+                ON short_sma.security_id = long_sma.security_id
+               AND short_sma.signal_date = long_sma.signal_date
+            WHERE short_sma.security_id = ?
+              AND short_sma.signal_type = 'SMA'
+              AND long_sma.signal_type = 'SMA'
+              AND short_sma.moving_average_period_days = ?
+              AND long_sma.moving_average_period_days = ?
+              AND short_sma.moving_average_value IS NOT NULL
+              AND long_sma.moving_average_value IS NOT NULL
+            ORDER BY short_sma.signal_date
+            """,
+            [security_id, short_period, long_period],
+        ).fetchall()
+    except duckdb.Error as error:
+        raise RuntimeError(
+            "Could not read moving average history from DuckDB. Check that the "
+            "database is open and the moving_average_signals table exists. "
+            f"Details: {error}"
+        ) from error
+
+    return [
+        {
+            "signal_date": row[0],
+            "short_value": row[1],
+            "long_value": row[2],
+        }
+        for row in rows
     ]
 
 
@@ -188,19 +307,26 @@ def detect_and_store_crossovers(
 ) -> Dict[str, Any]:
     """Detect and store moving average crossovers for active securities."""
     pairs = load_crossover_pairs(config_dir)
+    recent_days = load_crossover_recent_days(config_dir)
     securities = get_active_securities(connection)
+    latest_sma_date = get_latest_sma_date(connection)
     summary = {
         "tickers_checked": len(securities),
         "crossovers_written": 0,
         "skipped": {},
     }
 
+    if latest_sma_date is None:
+        return summary
+
+    cutoff_date = latest_sma_date - timedelta(days=recent_days)
+
     for security in securities:
         ticker = security["ticker"]
 
         for short_period, long_period in pairs:
             pair_key = f"{ticker}:{short_period}/{long_period}"
-            values = get_latest_sma_pair_values(
+            values = get_sma_pair_history(
                 connection,
                 security["security_id"],
                 short_period,
@@ -214,30 +340,69 @@ def detect_and_store_crossovers(
                 )
                 continue
 
-            previous, latest = values
-            crossover_type = detect_crossover(
-                previous["short_value"],
-                previous["long_value"],
-                latest["short_value"],
-                latest["long_value"],
-            )
+            for previous, current in zip(values, values[1:]):
+                current_date = _to_date(current["signal_date"])
 
-            if crossover_type is None:
-                continue
+                if current_date < cutoff_date:
+                    continue
 
-            upsert_crossover_signal(
-                connection,
-                security["security_id"],
-                latest["signal_date"],
-                short_period,
-                long_period,
-                latest["short_value"],
-                latest["long_value"],
-                crossover_type,
-            )
-            summary["crossovers_written"] += 1
+                crossover_type = detect_crossover(
+                    previous["short_value"],
+                    previous["long_value"],
+                    current["short_value"],
+                    current["long_value"],
+                )
+
+                if crossover_type is None:
+                    continue
+
+                upsert_crossover_signal(
+                    connection,
+                    security["security_id"],
+                    current["signal_date"],
+                    short_period,
+                    long_period,
+                    current["short_value"],
+                    current["long_value"],
+                    crossover_type,
+                )
+                summary["crossovers_written"] += 1
 
     return summary
+
+
+def get_latest_sma_date(connection: duckdb.DuckDBPyConnection) -> Optional[date]:
+    """Return the latest date with stored SMA values."""
+    try:
+        latest_value = connection.execute(
+            """
+            SELECT MAX(signal_date)
+            FROM moving_average_signals
+            WHERE signal_type = 'SMA'
+            """
+        ).fetchone()[0]
+    except duckdb.Error as error:
+        raise RuntimeError(
+            "Could not find the latest SMA date in DuckDB. Check that the "
+            "database is open and the moving_average_signals table exists. "
+            f"Details: {error}"
+        ) from error
+
+    if latest_value is None:
+        return None
+
+    return _to_date(latest_value)
+
+
+def _to_date(value: Any) -> date:
+    """Convert date-like values to ``date`` objects."""
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    return date.fromisoformat(str(value)[:10])
 
 
 def _get_table_columns(
