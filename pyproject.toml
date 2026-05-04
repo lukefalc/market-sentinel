@@ -18,7 +18,8 @@ dependencies = [
   "python-dotenv>=1.0",
   "PyYAML>=6.0",
   "duckdb>=1.0",
-  "yfinance>=0.2"
+  "yfinance>=0.2",
+  "reportlab>=4.0"
 ]
 
 [project.optional-dependencies]
