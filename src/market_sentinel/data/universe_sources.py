@@ -8,11 +8,18 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
+import requests
 
 from market_sentinel.data.universe_loader import REQUIRED_COLUMNS
 
 SP500_WIKIPEDIA_URL = (
     "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+)
+WIKIPEDIA_REQUEST_TIMEOUT_SECONDS = 20
+WIKIPEDIA_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 market-sentinel/0.1"
 )
 
 
@@ -27,12 +34,16 @@ def update_sp500_universe_csv(
         else Path("config") / "universes" / "sp_500.csv"
     )
 
+    html_text = _download_page_html(source_url)
+
     try:
-        tables = pd.read_html(source_url)
+        tables = pd.read_html(html_text)
     except (ImportError, ValueError, OSError) as error:
         raise RuntimeError(
-            "Could not download the S&P 500 table from Wikipedia. Check your "
-            "internet connection and make sure pandas HTML support is installed."
+            "Could not read the S&P 500 table from the downloaded Wikipedia "
+            "page. Check that pandas HTML support is installed and that the "
+            "Wikipedia page layout has not changed. "
+            f"Underlying error: {type(error).__name__}: {error}"
         ) from error
 
     source_table = _find_sp500_table(tables)
@@ -48,6 +59,30 @@ def update_sp500_universe_csv(
         ) from error
 
     return csv_path
+
+
+def _download_page_html(source_url: str) -> str:
+    """Download a webpage using a browser-style User-Agent header."""
+    try:
+        response = requests.get(
+            source_url,
+            headers={"User-Agent": WIKIPEDIA_USER_AGENT},
+            timeout=WIKIPEDIA_REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            "Could not download the S&P 500 table from Wikipedia. Check your "
+            "internet connection and try again. "
+            f"Underlying error: {type(error).__name__}: {error}"
+        ) from error
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(
+            "Could not download the S&P 500 table from Wikipedia. Wikipedia "
+            f"returned HTTP status {response.status_code}. Try again later."
+        )
+
+    return response.text
 
 
 def _find_sp500_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
