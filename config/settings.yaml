@@ -8,6 +8,9 @@ price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
 price_download_pause_seconds: 3
+dividend_download_batch_size: 20
+dividend_download_pause_seconds: 3
+dividend_retry_batch_size: 5
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF

@@ -150,6 +150,24 @@ During the update you should see:
 - Failed tickers for the batch.
 - A final summary.
 
+Dividend downloads are also processed in batches. By default, each dividend
+batch has 20 tickers, failed tickers are retried once in groups of 5, and the
+project pauses 3 seconds between batches.
+
+Failed dividend updates are saved here:
+
+```text
+outputs/failed_dividend_updates.csv
+```
+
+Dividend batch settings live in `config/settings.yaml`:
+
+```yaml
+dividend_download_batch_size: 20
+dividend_download_pause_seconds: 3
+dividend_retry_batch_size: 5
+```
+
 ## Update The S&P 500 Universe
 
 The S&P 500 universe can be refreshed from Wikipedia.

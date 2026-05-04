@@ -1,5 +1,6 @@
 """Tests for dividend analysis."""
 
+import csv
 from pathlib import Path
 
 from market_sentinel.analytics.dividends import calculate_and_store_dividends
@@ -177,9 +178,132 @@ def test_calculate_and_store_dividends_continues_after_failure(
         summary = calculate_and_store_dividends(
             connection,
             downloader=mixed_downloader,
+            pause_seconds=0,
+            failed_log_path=tmp_path / "failed_dividend_updates.csv",
         )
 
         assert "AAA" in summary["failed_tickers"]
+        assert summary["failed_tickers"]["AAA"]["reason"] == "network_error"
         assert summary["metrics_written"] == 1
     finally:
         connection.close()
+
+
+def test_calculate_and_store_dividends_processes_batches(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Dividend downloads should show progress by batch."""
+    connection = open_test_database(tmp_path)
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    try:
+        for security_id, ticker in enumerate(["AAA", "BBB", "CCC"], start=1):
+            insert_security(connection, security_id, ticker)
+            insert_latest_price(connection, security_id, 50.0)
+
+        summary = calculate_and_store_dividends(
+            connection,
+            downloader=fake_dividend_downloader,
+            batch_size=2,
+            pause_seconds=0.25,
+            retry_batch_size=1,
+            sleep_function=fake_sleep,
+            failed_log_path=tmp_path / "failed_dividend_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+
+    assert summary["tickers_checked"] == 3
+    assert summary["metrics_written"] == 3
+    assert sleep_calls == [0.25]
+    assert "Total tickers to process for dividends: 3" in captured.out
+    assert "Starting dividend batch 1 of 2" in captured.out
+    assert "Tickers in this batch: AAA, BBB" in captured.out
+    assert "Dividend rows written in this batch: 3" in captured.out
+    assert "Dividend metric rows written in this batch: 2" in captured.out
+    assert "Failed dividend tickers in this batch: none" in captured.out
+
+
+def test_calculate_and_store_dividends_retries_failed_tickers(
+    tmp_path: Path,
+) -> None:
+    """Failed dividend tickers should be retried once in smaller groups."""
+    connection = open_test_database(tmp_path)
+    calls = []
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    def flaky_downloader(ticker: str):
+        calls.append(ticker)
+
+        if calls.count(ticker) == 1:
+            raise RuntimeError("Temporary DNS failure")
+
+        return fake_dividend_downloader(ticker)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        insert_latest_price(connection, 1, 50.0)
+        insert_latest_price(connection, 2, 25.0)
+
+        summary = calculate_and_store_dividends(
+            connection,
+            downloader=flaky_downloader,
+            batch_size=2,
+            pause_seconds=0.5,
+            retry_batch_size=1,
+            sleep_function=fake_sleep,
+            failed_log_path=tmp_path / "failed_dividend_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    assert calls == ["AAA", "BBB", "AAA", "BBB"]
+    assert sleep_calls == [0.5]
+    assert summary["failed_tickers"] == {}
+    assert summary["metrics_written"] == 2
+
+
+def test_calculate_and_store_dividends_writes_failed_ticker_log(
+    tmp_path: Path,
+) -> None:
+    """Final failed dividend tickers should be written to a CSV file."""
+    connection = open_test_database(tmp_path)
+    failed_log_path = tmp_path / "outputs" / "failed_dividend_updates.csv"
+
+    def failing_downloader(ticker: str):
+        raise RuntimeError("getaddrinfo failed")
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_latest_price(connection, 1, 50.0)
+
+        summary = calculate_and_store_dividends(
+            connection,
+            downloader=failing_downloader,
+            batch_size=1,
+            pause_seconds=0,
+            retry_batch_size=1,
+            failed_log_path=failed_log_path,
+        )
+    finally:
+        connection.close()
+
+    with failed_log_path.open("r", encoding="utf-8", newline="") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+
+    assert "AAA" in summary["failed_tickers"]
+    assert summary["failed_tickers"]["AAA"]["reason"] == "network_error"
+    assert rows[0]["ticker"] == "AAA"
+    assert rows[0]["reason"] == "network_error"
+    assert "getaddrinfo failed" in rows[0]["details"]
+    assert rows[0]["date"]
