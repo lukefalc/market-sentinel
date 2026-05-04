@@ -10,6 +10,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from market_sentinel.config.loader import load_named_config
+
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pdf"
 
 
@@ -23,14 +25,15 @@ def generate_pdf_report(
     connection: duckdb.DuckDBPyConnection,
     output_dir: Optional[Path] = None,
     report_date: Optional[date] = None,
+    config_dir: Optional[Path] = None,
 ) -> Path:
     """Generate a simple daily PDF summary report."""
     selected_date = report_date or date.today()
-    target_dir = Path(output_dir) if output_dir is not None else DEFAULT_OUTPUT_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = _resolve_pdf_output_dir(output_dir, config_dir)
     output_path = target_dir / default_report_filename(selected_date)
 
     try:
+        target_dir.mkdir(parents=True, exist_ok=True)
         story = _build_report_story(connection, selected_date)
         document = SimpleDocTemplate(
             str(output_path),
@@ -48,11 +51,32 @@ def generate_pdf_report(
         ) from error
     except OSError as error:
         raise RuntimeError(
-            "Could not save the PDF report. Check that the output folder is "
-            f"writable: {target_dir}."
+            "Could not create or write to the PDF report folder. Check that "
+            f"this path exists or can be created: {target_dir}."
         ) from error
 
     return output_path
+
+
+def _resolve_pdf_output_dir(
+    output_dir: Optional[Path],
+    config_dir: Optional[Path],
+) -> Path:
+    """Resolve the PDF output directory from arguments, settings, or fallback."""
+    if output_dir is not None:
+        return Path(output_dir).expanduser()
+
+    try:
+        settings = load_named_config("settings", config_dir)
+    except FileNotFoundError:
+        return DEFAULT_OUTPUT_DIR
+
+    configured_dir = settings.get("report_outputs", {}).get("pdf_dir")
+
+    if configured_dir:
+        return Path(str(configured_dir)).expanduser()
+
+    return DEFAULT_OUTPUT_DIR
 
 
 def _build_report_story(

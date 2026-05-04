@@ -13,6 +13,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from market_sentinel.config.loader import load_named_config
+
 DEFAULT_OUTPUT_DIR = Path("outputs") / "excel"
 EXPECTED_WORKSHEET_TITLES = [
     "Summary",
@@ -42,13 +44,14 @@ def generate_excel_report(
     connection: duckdb.DuckDBPyConnection,
     output_dir: Optional[Path] = None,
     report_date: Optional[date] = None,
+    config_dir: Optional[Path] = None,
 ) -> Path:
     """Generate an Excel report from the local DuckDB database."""
-    target_dir = Path(output_dir) if output_dir is not None else DEFAULT_OUTPUT_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = _resolve_excel_output_dir(output_dir, config_dir)
     output_path = target_dir / default_report_filename(report_date)
 
     try:
+        target_dir.mkdir(parents=True, exist_ok=True)
         workbook = Workbook()
         summary_sheet = workbook.active
         summary_sheet.title = EXPECTED_WORKSHEET_TITLES[0]
@@ -77,11 +80,32 @@ def generate_excel_report(
         ) from error
     except OSError as error:
         raise RuntimeError(
-            "Could not save the Excel report. Check that the output folder is "
-            f"writable: {target_dir}."
+            "Could not create or write to the Excel report folder. Check that "
+            f"this path exists or can be created: {target_dir}."
         ) from error
 
     return output_path
+
+
+def _resolve_excel_output_dir(
+    output_dir: Optional[Path],
+    config_dir: Optional[Path],
+) -> Path:
+    """Resolve the Excel output directory from arguments, settings, or fallback."""
+    if output_dir is not None:
+        return Path(output_dir).expanduser()
+
+    try:
+        settings = load_named_config("settings", config_dir)
+    except FileNotFoundError:
+        return DEFAULT_OUTPUT_DIR
+
+    configured_dir = settings.get("report_outputs", {}).get("excel_dir")
+
+    if configured_dir:
+        return Path(str(configured_dir)).expanduser()
+
+    return DEFAULT_OUTPUT_DIR
 
 
 def _write_summary_sheet(sheet, connection: duckdb.DuckDBPyConnection) -> None:

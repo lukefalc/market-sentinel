@@ -4,3 +4,6 @@ environment: development
 log_level: INFO
 database_path: data/market_sentinel.duckdb
 report_output_dir: reports
+report_outputs:
+  excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
+  pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF

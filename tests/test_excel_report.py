@@ -23,6 +23,25 @@ def write_settings(config_dir: Path, database_path: Path) -> None:
     )
 
 
+def write_report_settings(
+    config_dir: Path,
+    database_path: Path,
+    excel_dir: str,
+) -> None:
+    """Create settings with a custom Excel report output folder."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.joinpath("settings.yaml").write_text(
+        "\n".join(
+            [
+                f"database_path: {database_path}",
+                "report_outputs:",
+                f"  excel_dir: {excel_dir}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def open_test_database(tmp_path: Path):
     """Open a temporary DuckDB database with the project schema."""
     config_dir = tmp_path / "config"
@@ -216,6 +235,45 @@ def test_generate_excel_report_creates_output_folder(tmp_path: Path) -> None:
         connection.close()
 
     assert output_dir.exists()
+    assert output_path.exists()
+
+
+def test_generate_excel_report_uses_configured_output_folder(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Excel reports should use configured output folders and expand ~."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_dir = tmp_path / "config"
+    database_path = tmp_path / "data" / "market_sentinel.duckdb"
+    write_report_settings(
+        config_dir,
+        database_path,
+        "~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel",
+    )
+    connection = open_duckdb_connection(config_dir)
+    initialise_database_schema(connection)
+
+    try:
+        output_path = generate_excel_report(
+            connection,
+            report_date=date(2026, 5, 3),
+            config_dir=config_dir,
+        )
+    finally:
+        connection.close()
+
+    expected_dir = (
+        tmp_path
+        / "Library"
+        / "CloudStorage"
+        / "OneDrive-Personal"
+        / "Finance"
+        / "MarketSentinel"
+        / "Excel"
+    )
+
+    assert output_path.parent == expected_dir
     assert output_path.exists()
 
 
