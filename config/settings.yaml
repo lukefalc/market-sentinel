@@ -7,3 +7,6 @@ report_output_dir: reports
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF
+email_alerts:
+  settings_source: environment_variables
+  sends_automatically_from_daily_process: false

@@ -65,6 +65,34 @@ cp .env.example .env
 
 Do not commit `.env` because it may contain private credentials later.
 
+### Email Alerts
+
+Email alerts are optional and disabled by default. Settings are read from
+environment variables, usually through your local `.env` file.
+
+Required variables when email is enabled:
+
+```text
+MARKET_SENTINEL_EMAIL_ENABLED=true
+MARKET_SENTINEL_SMTP_HOST=smtp.example.com
+MARKET_SENTINEL_SMTP_PORT=587
+MARKET_SENTINEL_SMTP_USERNAME=your_email@example.com
+MARKET_SENTINEL_SMTP_PASSWORD=your_app_password_here
+MARKET_SENTINEL_EMAIL_FROM=your_email@example.com
+MARKET_SENTINEL_EMAIL_TO=your_email@example.com
+```
+
+Use an app password from your email provider where possible. Do not commit real
+passwords or secrets.
+
+Send the alert summary manually with:
+
+```bash
+PYTHONPATH=src python3 scripts/send_daily_alert_email.py
+```
+
+The daily process runner does not send email automatically yet.
+
 ## Updating Stock Universes
 
 Stock universe files live in:
