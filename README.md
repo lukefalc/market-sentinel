@@ -91,7 +91,8 @@ Send the alert summary manually with:
 PYTHONPATH=src python3 scripts/send_daily_alert_email.py
 ```
 
-The daily process runner does not send email automatically yet.
+The daily process runner includes email as the final optional step. If email is
+disabled, it prints a friendly message and does not send anything.
 
 ## Updating Stock Universes
 
@@ -100,8 +101,27 @@ Stock universe files live in:
 - `config/universes/ftse_350.csv`
 - `config/universes/sp_500.csv`
 
-For now, `market-sentinel` does not automatically download full index
-constituents. Update these CSV files manually when you want to add, remove, or
+The S&P 500 CSV can be updated from Wikipedia. FTSE 350 is still manual for now.
+
+To refresh the S&P 500 universe:
+
+```bash
+PYTHONPATH=src python3 scripts/update_sp500_universe.py
+```
+
+Then load the universe into the local database:
+
+```bash
+PYTHONPATH=src python3 scripts/load_universe.py
+```
+
+Then run the daily process:
+
+```bash
+PYTHONPATH=src python3 scripts/run_daily_process.py
+```
+
+For FTSE 350, update the CSV file manually when you want to add, remove, or
 correct stocks.
 
 Keep this exact header row:
@@ -131,7 +151,7 @@ HSBA.L,HSBC Holdings,FTSE 350,United Kingdom,GBP,Financial Services
 Tips for manual updates:
 
 - Use Yahoo Finance-style tickers where possible, such as `AAPL` or `HSBA.L`.
-- Keep S&P 500 rows in `sp_500.csv`.
+- S&P 500 rows can be refreshed with `scripts/update_sp500_universe.py`.
 - Keep FTSE 350 rows in `ftse_350.csv`.
 - If a company name contains a comma, wrap the name in quotes.
 - Save the file as plain CSV, not an Excel workbook.
@@ -139,6 +159,7 @@ Tips for manual updates:
 
 ## Current Status
 
-This repository now includes local universe loading, market data updates,
-analytics, risk flags, and Excel/PDF report generation. Full index constituent
-downloading is not implemented yet.
+This repository now includes local universe loading, an S&P 500 universe
+updater, market data updates, analytics, risk flags, Excel/PDF reports, and
+optional email summaries. FTSE 350 constituent downloading is not implemented
+yet.
