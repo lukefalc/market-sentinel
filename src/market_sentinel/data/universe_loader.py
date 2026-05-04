@@ -13,6 +13,7 @@ import duckdb
 from market_sentinel.config.loader import default_config_dir
 
 REQUIRED_COLUMNS = ["ticker", "name", "market", "region", "currency", "sector"]
+REQUIRED_VALUE_COLUMNS = ["ticker", "name", "market", "region", "currency"]
 
 
 def default_universe_dir() -> Path:
@@ -47,13 +48,14 @@ def read_universe_csv(csv_path: Path) -> List[Dict[str, str]]:
                 )
 
             rows = []
-            for row in reader:
-                rows.append(
-                    {
-                        column: (row.get(column) or "").strip()
-                        for column in REQUIRED_COLUMNS
-                    }
-                )
+            for row_number, row in enumerate(reader, start=2):
+                _validate_csv_row(row, row_number, csv_path)
+                clean_row = {
+                    column: (row.get(column) or "").strip()
+                    for column in REQUIRED_COLUMNS
+                }
+                _validate_required_values(clean_row, row_number, csv_path)
+                rows.append(clean_row)
     except csv.Error as error:
         raise ValueError(
             "Could not read the stock universe CSV file: "
@@ -61,6 +63,34 @@ def read_universe_csv(csv_path: Path) -> List[Dict[str, str]]:
         ) from error
 
     return rows
+
+
+def _validate_csv_row(row: Dict[str, str], row_number: int, csv_path: Path) -> None:
+    """Validate that a CSV row has the expected shape."""
+    if None in row:
+        raise ValueError(
+            "Stock universe CSV row has too many values: "
+            f"{csv_path}, row {row_number}. "
+            "Check for extra commas or unquoted company names containing commas."
+        )
+
+
+def _validate_required_values(
+    row: Dict[str, str],
+    row_number: int,
+    csv_path: Path,
+) -> None:
+    """Validate required values in one CSV row."""
+    missing_values = [
+        column for column in REQUIRED_VALUE_COLUMNS if not row.get(column)
+    ]
+
+    if missing_values:
+        raise ValueError(
+            "Stock universe CSV row is missing required values: "
+            f"{', '.join(missing_values)} in {csv_path}, row {row_number}. "
+            "Each row must include ticker, name, market, region, and currency."
+        )
 
 
 def load_universe_csv(

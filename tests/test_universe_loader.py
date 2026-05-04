@@ -118,3 +118,49 @@ def test_load_universe_csv_raises_clear_error_for_missing_columns(
             load_universe_csv(connection, csv_path)
     finally:
         connection.close()
+
+
+def test_load_universe_csv_raises_clear_error_for_missing_required_values(
+    tmp_path: Path,
+) -> None:
+    """Rows missing required values should produce a friendly error."""
+    csv_path = tmp_path / "universes" / "bad_values.csv"
+    write_csv(
+        csv_path,
+        "\n".join(
+            [
+                "ticker,name,market,region,currency,sector",
+                ",Example A,S&P 500,United States,USD,Technology",
+            ]
+        ),
+    )
+    connection = open_test_database(tmp_path)
+
+    try:
+        with pytest.raises(ValueError, match="missing required values"):
+            load_universe_csv(connection, csv_path)
+    finally:
+        connection.close()
+
+
+def test_load_universe_csv_raises_clear_error_for_malformed_row(
+    tmp_path: Path,
+) -> None:
+    """Rows with too many values should produce a friendly error."""
+    csv_path = tmp_path / "universes" / "malformed.csv"
+    write_csv(
+        csv_path,
+        "\n".join(
+            [
+                "ticker,name,market,region,currency,sector",
+                "AAA,Example A,S&P 500,United States,USD,Technology,Extra",
+            ]
+        ),
+    )
+    connection = open_test_database(tmp_path)
+
+    try:
+        with pytest.raises(ValueError, match="too many values"):
+            load_universe_csv(connection, csv_path)
+    finally:
+        connection.close()

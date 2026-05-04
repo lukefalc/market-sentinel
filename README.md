@@ -1,8 +1,10 @@
 # market-sentinel
 
-`market-sentinel` is a beginner-friendly Python project for analysing FTSE 350 and S&P 500 stocks.
+`market-sentinel` is a beginner-friendly Python project for analysing FTSE 350
+and S&P 500 stocks.
 
-The project is designed to grow gradually. The current version is a modular skeleton only: it does not download market data yet.
+The project is designed to grow gradually, with local CSV universe files,
+DuckDB storage, analytics, and Excel/PDF reports.
 
 ## Planned Features
 
@@ -63,6 +65,52 @@ cp .env.example .env
 
 Do not commit `.env` because it may contain private credentials later.
 
+## Updating Stock Universes
+
+Stock universe files live in:
+
+- `config/universes/ftse_350.csv`
+- `config/universes/sp_500.csv`
+
+For now, `market-sentinel` does not automatically download full index
+constituents. Update these CSV files manually when you want to add, remove, or
+correct stocks.
+
+Keep this exact header row:
+
+```csv
+ticker,name,market,region,currency,sector
+```
+
+Each row must include values for:
+
+- `ticker`
+- `name`
+- `market`
+- `region`
+- `currency`
+
+The `sector` field should be filled in when you know it, but it can be left
+blank temporarily.
+
+Example rows:
+
+```csv
+AAPL,Apple,S&P 500,United States,USD,Technology
+HSBA.L,HSBC Holdings,FTSE 350,United Kingdom,GBP,Financial Services
+```
+
+Tips for manual updates:
+
+- Use Yahoo Finance-style tickers where possible, such as `AAPL` or `HSBA.L`.
+- Keep S&P 500 rows in `sp_500.csv`.
+- Keep FTSE 350 rows in `ftse_350.csv`.
+- If a company name contains a comma, wrap the name in quotes.
+- Save the file as plain CSV, not an Excel workbook.
+- After editing, run `python3 scripts/load_universe.py` from the project folder.
+
 ## Current Status
 
-This repository contains the project skeleton only. Data downloading, calculations, storage, reports, and alerts are intentionally left as future implementation work.
+This repository now includes local universe loading, market data updates,
+analytics, risk flags, and Excel/PDF report generation. Full index constituent
+downloading is not implemented yet.
