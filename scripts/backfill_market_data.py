@@ -51,8 +51,8 @@ def main() -> None:
 
     if summary["failed_tickers"]:
         print("Some tickers could not be backfilled:")
-        for ticker, message in summary["failed_tickers"].items():
-            print(f"- {ticker}: {message}")
+        for ticker, failure in summary["failed_tickers"].items():
+            print(f"- {ticker}: {failure['reason']} - {failure['details']}")
 
 
 def load_backfill_settings():

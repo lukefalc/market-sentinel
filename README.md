@@ -139,17 +139,23 @@ PYTHONPATH=src python3 scripts/backfill_market_data.py
 ```
 
 Both modes use yfinance batches so large universes, such as the S&P 500, show
-regular progress. The default batch size is 50 tickers, the daily lookback is
+regular progress. The default batch size is 20 tickers, the daily lookback is
 10 days, the backfill period is 5 years, and the pause between batches is
-1 second.
+3 seconds.
+
+Failed price updates are saved to:
+
+```text
+outputs/failed_price_updates.csv
+```
 
 You can adjust this in `config/settings.yaml`:
 
 ```yaml
-price_download_batch_size: 50
+price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
-price_download_pause_seconds: 1
+price_download_pause_seconds: 3
 ```
 
 For FTSE 350, update the CSV file manually when you want to add, remove, or

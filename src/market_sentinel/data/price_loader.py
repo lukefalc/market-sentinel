@@ -5,7 +5,9 @@ the database. It uses yfinance for real downloads, but tests can pass fake
 download functions so the test suite never needs live internet access.
 """
 
+import csv
 from datetime import date, datetime, timedelta
+from pathlib import Path
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -17,11 +19,13 @@ BatchDownloader = Callable[
     Any,
 ]
 SleepFunction = Callable[[float], None]
-DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE = 50
+DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE = 20
 DEFAULT_PRICE_DAILY_LOOKBACK_DAYS = 10
 DEFAULT_PRICE_DOWNLOAD_LOOKBACK_DAYS = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS
-DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 1.0
+DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 3.0
 DEFAULT_PRICE_BACKFILL_PERIOD = "5y"
+DEFAULT_PRICE_RETRY_BATCH_SIZE = 5
+DEFAULT_FAILED_PRICE_UPDATES_PATH = Path("outputs") / "failed_price_updates.csv"
 DEFAULT_BATCH_SIZE = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE
 DEFAULT_BATCH_PAUSE_SECONDS = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS
 
@@ -270,6 +274,7 @@ def update_daily_prices(
     mode: str = "daily",
     backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
     sleep_function: SleepFunction = time.sleep,
+    failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
 ) -> Dict[str, Any]:
     """Download and store daily prices for every active ticker."""
     if batch_size <= 0:
@@ -319,6 +324,8 @@ def update_daily_prices(
                 download_period,
                 batch_downloader,
                 batch_failed_tickers,
+                sleep_function,
+                pause_seconds,
             )
 
         summary["price_rows_written"] += batch_rows_written
@@ -328,8 +335,10 @@ def update_daily_prices(
 
         if batch_failed_tickers:
             print("Failed tickers in this batch:")
-            for ticker, message in batch_failed_tickers.items():
-                print(f"- {ticker}: {message}")
+            for ticker, failure in batch_failed_tickers.items():
+                print(
+                    f"- {ticker}: {failure['reason']} - {failure['details']}"
+                )
         else:
             print("Failed tickers in this batch: none")
 
@@ -343,10 +352,15 @@ def update_daily_prices(
 
     if summary["failed_tickers"]:
         print("Failed tickers:")
-        for ticker, message in summary["failed_tickers"].items():
-            print(f"- {ticker}: {message}")
+        for ticker, failure in summary["failed_tickers"].items():
+            print(
+                f"- {ticker}: {failure['reason']} - {failure['details']}"
+            )
     else:
         print("Failed tickers: none")
+
+    if summary["failed_tickers"]:
+        write_failed_price_updates(summary["failed_tickers"], failed_log_path)
 
     return summary
 
@@ -357,6 +371,7 @@ def update_recent_daily_prices(
     lookback_days: int = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
     pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     batch_downloader: Optional[BatchDownloader] = None,
+    failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
 ) -> Dict[str, Any]:
     """Run the normal daily price update mode."""
     return update_daily_prices(
@@ -365,6 +380,7 @@ def update_recent_daily_prices(
         lookback_days=lookback_days,
         pause_seconds=pause_seconds,
         batch_downloader=batch_downloader,
+        failed_log_path=failed_log_path,
         mode="daily",
     )
 
@@ -375,6 +391,7 @@ def backfill_daily_prices(
     backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
     pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     batch_downloader: Optional[BatchDownloader] = None,
+    failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
 ) -> Dict[str, Any]:
     """Run the larger historical price backfill mode."""
     return update_daily_prices(
@@ -384,6 +401,7 @@ def backfill_daily_prices(
         mode="backfill",
         backfill_period=backfill_period,
         batch_downloader=batch_downloader,
+        failed_log_path=failed_log_path,
     )
 
 
@@ -393,7 +411,7 @@ def _update_batch_with_single_ticker_downloader(
     start_date: Optional[str],
     end_date: Optional[str],
     downloader: Downloader,
-    batch_failed_tickers: Dict[str, str],
+    batch_failed_tickers: Dict[str, Dict[str, str]],
 ) -> int:
     """Update one batch by downloading one ticker at a time."""
     batch_rows_written = 0
@@ -414,7 +432,7 @@ def _update_batch_with_single_ticker_downloader(
                 price_rows,
             )
         except RuntimeError as error:
-            batch_failed_tickers[ticker] = str(error)
+            batch_failed_tickers[ticker] = _failure_details(error)
 
     return batch_rows_written
 
@@ -426,34 +444,96 @@ def _update_batch_with_batch_downloader(
     end_date: Optional[str],
     period: Optional[str],
     batch_downloader: Optional[BatchDownloader],
-    batch_failed_tickers: Dict[str, str],
+    batch_failed_tickers: Dict[str, Dict[str, str]],
+    sleep_function: SleepFunction,
+    pause_seconds: float,
 ) -> int:
     """Update one batch using one yfinance request for all tickers."""
     batch_tickers = [security["ticker"] for security in batch]
+    securities_by_ticker = {security["ticker"]: security for security in batch}
 
+    batch_rows_written = _download_and_store_batch(
+        connection,
+        securities_by_ticker,
+        batch_tickers,
+        start_date,
+        end_date,
+        period,
+        batch_downloader,
+        batch_failed_tickers,
+    )
+
+    if not batch_failed_tickers:
+        return batch_rows_written
+
+    retry_tickers = list(batch_failed_tickers)
+    print(
+        "Retrying failed tickers once in smaller groups: "
+        + ", ".join(retry_tickers)
+    )
+
+    if pause_seconds > 0:
+        sleep_function(pause_seconds)
+
+    for retry_group in _chunk_tickers(retry_tickers, DEFAULT_PRICE_RETRY_BATCH_SIZE):
+        retry_failures: Dict[str, Dict[str, str]] = {}
+        retry_rows_written = _download_and_store_batch(
+            connection,
+            securities_by_ticker,
+            retry_group,
+            start_date,
+            end_date,
+            period,
+            batch_downloader,
+            retry_failures,
+        )
+        batch_rows_written += retry_rows_written
+
+        for ticker in retry_group:
+            if ticker not in retry_failures:
+                batch_failed_tickers.pop(ticker, None)
+            else:
+                batch_failed_tickers[ticker] = retry_failures[ticker]
+
+    return batch_rows_written
+
+
+def _download_and_store_batch(
+    connection: duckdb.DuckDBPyConnection,
+    securities_by_ticker: Dict[str, Dict[str, Any]],
+    tickers: List[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    period: Optional[str],
+    batch_downloader: Optional[BatchDownloader],
+    batch_failed_tickers: Dict[str, Dict[str, str]],
+) -> int:
+    """Download and store one group of tickers."""
     try:
         price_rows_by_ticker = download_daily_prices_for_batch(
-            batch_tickers,
+            tickers,
             start_date=start_date,
             end_date=end_date,
             period=period,
             batch_downloader=batch_downloader,
         )
     except RuntimeError as error:
-        for ticker in batch_tickers:
-            batch_failed_tickers[ticker] = str(error)
+        failure = _failure_details(error)
+        for ticker in tickers:
+            batch_failed_tickers[ticker] = failure
         return 0
 
     batch_rows_written = 0
 
-    for security in batch:
-        ticker = security["ticker"]
+    for ticker in tickers:
+        security = securities_by_ticker[ticker]
         price_rows = price_rows_by_ticker.get(ticker, [])
 
         if not price_rows:
-            batch_failed_tickers[ticker] = (
-                "No recent price rows were returned for this ticker."
-            )
+            batch_failed_tickers[ticker] = {
+                "reason": "no_price_rows",
+                "details": "No recent price rows were returned for this ticker.",
+            }
             continue
 
         try:
@@ -463,7 +543,7 @@ def _update_batch_with_batch_downloader(
                 price_rows,
             )
         except RuntimeError as error:
-            batch_failed_tickers[ticker] = str(error)
+            batch_failed_tickers[ticker] = _failure_details(error)
 
     return batch_rows_written
 
@@ -511,6 +591,72 @@ def _chunk_securities(
     ]
 
 
+def _chunk_tickers(tickers: List[str], batch_size: int) -> List[List[str]]:
+    """Split tickers into batches."""
+    return [
+        tickers[start_index : start_index + batch_size]
+        for start_index in range(0, len(tickers), batch_size)
+    ]
+
+
+def _failure_details(error: Exception) -> Dict[str, str]:
+    """Return a clearer failure reason and details."""
+    details = str(error)
+    lower_details = details.lower()
+
+    if any(
+        text in lower_details
+        for text in [
+            "dns",
+            "certificate",
+            "cert",
+            "getaddrinfo",
+            "name resolution",
+            "temporary failure",
+            "connection",
+            "timeout",
+            "timed out",
+            "network",
+            "ssl",
+        ]
+    ):
+        reason = "network_error"
+    elif "no recent price rows" in lower_details or "no price" in lower_details:
+        reason = "no_price_rows"
+    elif "parse" in lower_details or "parsing" in lower_details:
+        reason = "parsing_error"
+    else:
+        reason = "unknown_error"
+
+    return {"reason": reason, "details": details}
+
+
+def write_failed_price_updates(
+    failed_tickers: Dict[str, Dict[str, str]],
+    failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
+) -> None:
+    """Write failed price updates to a CSV file."""
+    failed_log_path = Path(failed_log_path)
+    failed_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with failed_log_path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=["ticker", "reason", "details", "date"],
+        )
+        writer.writeheader()
+
+        for ticker, failure in sorted(failed_tickers.items()):
+            writer.writerow(
+                {
+                    "ticker": ticker,
+                    "reason": failure["reason"],
+                    "details": failure["details"],
+                    "date": date.today().isoformat(),
+                }
+            )
+
+
 def _download_batch_from_yfinance(
     tickers: List[str],
     start_date: Optional[str],
@@ -530,7 +676,7 @@ def _download_batch_from_yfinance(
         "auto_adjust": False,
         "progress": False,
         "interval": "1d",
-        "threads": True,
+        "threads": False,
         "group_by": "column",
     }
 

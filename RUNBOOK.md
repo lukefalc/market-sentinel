@@ -122,17 +122,23 @@ backfill.
 Both modes process tickers in yfinance batches. This is normal and helps the
 project handle large universes like the S&P 500 without looking stuck.
 
-By default, each batch has 50 tickers, daily mode downloads the last 10 days,
-backfill mode downloads 5 years, and the project pauses 1 second between
+By default, each batch has 20 tickers, daily mode downloads the last 10 days,
+backfill mode downloads 5 years, and the project pauses 3 seconds between
 batches.
+
+Failed price updates are saved here:
+
+```text
+outputs/failed_price_updates.csv
+```
 
 To change this, edit `config/settings.yaml`:
 
 ```yaml
-price_download_batch_size: 50
+price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
-price_download_pause_seconds: 1
+price_download_pause_seconds: 3
 ```
 
 During the update you should see:

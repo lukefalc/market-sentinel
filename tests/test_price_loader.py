@@ -1,5 +1,6 @@
 """Tests for daily price loading."""
 
+import csv
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -139,7 +140,11 @@ def test_update_daily_prices_continues_after_failed_ticker(
         insert_security(connection, 1, "AAA")
         insert_security(connection, 2, "BBB")
 
-        summary = update_daily_prices(connection, downloader=mixed_downloader)
+        summary = update_daily_prices(
+            connection,
+            downloader=mixed_downloader,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
         saved_count = connection.execute(
             "SELECT COUNT(*) FROM daily_prices"
         ).fetchone()[0]
@@ -213,6 +218,7 @@ def test_update_daily_prices_reports_failed_tickers_per_batch(
             downloader=mixed_downloader,
             batch_size=2,
             pause_seconds=0,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -222,6 +228,7 @@ def test_update_daily_prices_reports_failed_tickers_per_batch(
     assert summary["tickers_checked"] == 3
     assert summary["price_rows_written"] == 4
     assert "BBB" in summary["failed_tickers"]
+    assert summary["failed_tickers"]["BBB"]["reason"] == "network_error"
     assert "Failed tickers in this batch:" in captured.out
     assert "- BBB:" in captured.out
     assert "Starting batch 2 of 2" in captured.out
@@ -258,6 +265,7 @@ def test_update_daily_prices_uses_yfinance_batch_download(
             batch_size=2,
             pause_seconds=0,
             lookback_days=10,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -268,6 +276,7 @@ def test_update_daily_prices_uses_yfinance_batch_download(
     assert download_calls[0]["tickers"] == ["AAA", "BBB"]
     assert download_calls[1]["tickers"] == ["CCC"]
     assert download_calls[0]["options"]["start"]
+    assert download_calls[0]["options"]["threads"] is False
     assert "period" not in download_calls[0]["options"]
 
 
@@ -296,6 +305,7 @@ def test_update_daily_prices_continues_after_failed_batch(
             batch_downloader=fake_batch_downloader,
             batch_size=2,
             pause_seconds=0,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -305,6 +315,7 @@ def test_update_daily_prices_continues_after_failed_batch(
     assert "AAA" in summary["failed_tickers"]
     assert "BBB" in summary["failed_tickers"]
     assert "CCC" not in summary["failed_tickers"]
+    assert summary["failed_tickers"]["AAA"]["reason"] == "network_error"
 
 
 def test_update_recent_daily_prices_uses_lookback_start_date(
@@ -331,6 +342,7 @@ def test_update_recent_daily_prices_uses_lookback_start_date(
             lookback_days=10,
             pause_seconds=0,
             batch_downloader=fake_batch_downloader,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -365,6 +377,7 @@ def test_update_daily_prices_daily_mode_passes_recent_start_date(
             pause_seconds=0,
             mode="daily",
             lookback_days=10,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -397,6 +410,7 @@ def test_backfill_daily_prices_uses_backfill_period(
             batch_size=50,
             pause_seconds=0,
             backfill_period="5y",
+            failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
         connection.close()
@@ -404,3 +418,87 @@ def test_backfill_daily_prices_uses_backfill_period(
     assert summary["tickers_checked"] == 1
     assert batch_calls[0]["start_date"] is None
     assert batch_calls[0]["period"] == "5y"
+
+
+def test_update_daily_prices_retries_failed_tickers_in_smaller_groups(
+    tmp_path: Path,
+) -> None:
+    """Failed tickers should be retried once in groups of five."""
+    connection = open_test_database(tmp_path)
+    batch_calls = []
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    def flaky_batch_downloader(tickers, start_date, end_date, period):
+        batch_calls.append(list(tickers))
+
+        if len(batch_calls) == 1:
+            raise RuntimeError("Temporary DNS failure")
+
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        for security_id, ticker in enumerate(
+            ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"],
+            start=1,
+        ):
+            insert_security(connection, security_id, ticker)
+
+        summary = update_daily_prices(
+            connection,
+            batch_downloader=flaky_batch_downloader,
+            batch_size=6,
+            pause_seconds=0.5,
+            sleep_function=fake_sleep,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    assert batch_calls == [
+        ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"],
+        ["AAA", "BBB", "CCC", "DDD", "EEE"],
+        ["FFF"],
+    ]
+    assert sleep_calls == [0.5]
+    assert summary["price_rows_written"] == 12
+    assert summary["failed_tickers"] == {}
+
+
+def test_update_daily_prices_writes_failed_ticker_log(
+    tmp_path: Path,
+) -> None:
+    """Final failed tickers should be written to outputs-style CSV."""
+    connection = open_test_database(tmp_path)
+    failed_log_path = tmp_path / "outputs" / "failed_price_updates.csv"
+
+    def failing_batch_downloader(tickers, start_date, end_date, period):
+        raise RuntimeError("getaddrinfo failed")
+
+    try:
+        insert_security(connection, 1, "AAA")
+
+        summary = update_daily_prices(
+            connection,
+            batch_downloader=failing_batch_downloader,
+            batch_size=1,
+            pause_seconds=0,
+            failed_log_path=failed_log_path,
+        )
+    finally:
+        connection.close()
+
+    with failed_log_path.open("r", encoding="utf-8", newline="") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+
+    assert "AAA" in summary["failed_tickers"]
+    assert summary["failed_tickers"]["AAA"]["reason"] == "network_error"
+    assert rows[0]["ticker"] == "AAA"
+    assert rows[0]["reason"] == "network_error"
+    assert "getaddrinfo failed" in rows[0]["details"]
+    assert rows[0]["date"]
