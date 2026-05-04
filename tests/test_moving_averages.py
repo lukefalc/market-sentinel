@@ -95,7 +95,7 @@ def test_calculate_simple_moving_average() -> None:
 
 
 def test_calculate_and_store_moving_averages(tmp_path: Path) -> None:
-    """Latest moving averages should be stored for periods with enough data."""
+    """Dated moving averages should be stored for periods with enough data."""
     connection, config_dir = open_test_database(tmp_path)
 
     try:
@@ -106,19 +106,24 @@ def test_calculate_and_store_moving_averages(tmp_path: Path) -> None:
         saved_rows = connection.execute(
             """
             SELECT
+                signal_date,
                 moving_average_period_days,
                 moving_average_value,
                 signal_type
             FROM moving_average_signals
             WHERE security_id = 1
-            ORDER BY moving_average_period_days
+            ORDER BY signal_date, moving_average_period_days
             """
         ).fetchall()
 
         assert summary["tickers_checked"] == 1
-        assert summary["signals_written"] == 2
+        assert summary["signals_written"] == 25
         assert summary["skipped_tickers"] == {}
-        assert saved_rows == [(7, 27.0, "SMA"), (30, 15.5, "SMA")]
+        assert _normalise_rows(saved_rows)[0] == ("2026-01-07", 7, 4.0, "SMA")
+        assert _normalise_rows(saved_rows[-2:]) == [
+            ("2026-01-30", 7, 27.0, "SMA"),
+            ("2026-01-30", 30, 15.5, "SMA"),
+        ]
     finally:
         connection.close()
 
@@ -149,7 +154,7 @@ def test_calculate_and_store_moving_averages_skips_short_history(
 def test_calculate_and_store_moving_averages_updates_existing_values(
     tmp_path: Path,
 ) -> None:
-    """Running the calculator twice should update existing latest SMA rows."""
+    """Running the calculator twice should not duplicate dated SMA rows."""
     connection, config_dir = open_test_database(tmp_path)
 
     try:
@@ -163,6 +168,113 @@ def test_calculate_and_store_moving_averages_updates_existing_values(
             "SELECT COUNT(*) FROM moving_average_signals"
         ).fetchone()[0]
 
-        assert saved_count == 2
+        assert saved_count == 25
     finally:
         connection.close()
+
+
+def test_calculate_and_store_moving_averages_has_two_latest_dates(
+    tmp_path: Path,
+) -> None:
+    """Historical storage should provide enough dates for crossover checks."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, 31)
+
+        calculate_and_store_moving_averages(connection, config_dir)
+        dates_with_both_periods = connection.execute(
+            """
+            SELECT signal_date
+            FROM moving_average_signals
+            WHERE security_id = 1
+              AND signal_type = 'SMA'
+              AND moving_average_period_days IN (7, 30)
+            GROUP BY signal_date
+            HAVING COUNT(DISTINCT moving_average_period_days) = 2
+            ORDER BY signal_date DESC
+            LIMIT 2
+            """
+        ).fetchall()
+
+        assert _normalise_rows(dates_with_both_periods) == [
+            ("2026-01-31",),
+            ("2026-01-30",),
+        ]
+    finally:
+        connection.close()
+
+
+def test_calculate_and_store_moving_averages_limits_stored_history(
+    tmp_path: Path,
+) -> None:
+    """Only recent SMA dates should be stored while using earlier prices."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, 31)
+
+        summary = calculate_and_store_moving_averages(
+            connection,
+            config_dir,
+            history_days=2,
+        )
+        saved_rows = connection.execute(
+            """
+            SELECT signal_date, moving_average_period_days, moving_average_value
+            FROM moving_average_signals
+            WHERE security_id = 1
+            ORDER BY signal_date, moving_average_period_days
+            """
+        ).fetchall()
+
+        assert summary["signals_written"] == 4
+        assert _normalise_rows(saved_rows) == [
+            ("2026-01-30", 7, 27.0),
+            ("2026-01-30", 30, 15.5),
+            ("2026-01-31", 7, 28.0),
+            ("2026-01-31", 30, 16.5),
+        ]
+    finally:
+        connection.close()
+
+
+def test_calculate_and_store_moving_averages_prints_progress(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Moving average calculation should show visible ticker progress."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        insert_daily_prices(connection, 1, 30)
+        insert_daily_prices(connection, 2, 3)
+
+        summary = calculate_and_store_moving_averages(connection, config_dir)
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+
+    assert summary["tickers_checked"] == 2
+    assert "Total tickers for moving averages: 2" in captured.out
+    assert "Processing ticker 1 of 2: AAA" in captured.out
+    assert "Rows written for AAA: 25" in captured.out
+    assert "Processing ticker 2 of 2: BBB" in captured.out
+    assert "Rows written for BBB: 0" in captured.out
+    assert "Moving average calculation summary" in captured.out
+
+
+def _normalise_rows(rows):
+    """Convert date-like values in fetched rows to ISO strings."""
+    return [
+        tuple(
+            value.isoformat() if hasattr(value, "isoformat") else value
+            for value in row
+        )
+        for row in rows
+    ]

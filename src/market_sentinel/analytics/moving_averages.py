@@ -1,8 +1,8 @@
 """Simple moving average calculations.
 
-This module reads daily closing prices from DuckDB, calculates the latest simple
-moving averages for configured periods, and stores those latest values in the
-``moving_average_signals`` table. It does not detect crossovers yet.
+This module reads daily closing prices from DuckDB, calculates dated simple
+moving averages for configured periods, and stores those values in the
+``moving_average_signals`` table. Crossover detection uses these dated rows.
 """
 
 from pathlib import Path
@@ -14,6 +14,7 @@ from market_sentinel.config.loader import load_named_config
 from market_sentinel.data.price_loader import get_active_securities
 
 DEFAULT_PERIODS = [7, 30, 50, 100, 200]
+DEFAULT_MOVING_AVERAGE_HISTORY_DAYS = 260
 
 
 def load_moving_average_periods(config_dir: Optional[Path] = None) -> List[int]:
@@ -98,6 +99,41 @@ def calculate_latest_moving_averages(
     return averages
 
 
+def calculate_historical_moving_averages(
+    price_rows: List[Dict[str, Any]],
+    periods: Iterable[int],
+    history_days: int = DEFAULT_MOVING_AVERAGE_HISTORY_DAYS,
+) -> List[Dict[str, Any]]:
+    """Calculate dated simple moving averages for all available windows."""
+    signals = []
+    first_stored_index = _first_stored_price_index(price_rows, history_days)
+
+    for period in periods:
+        if len(price_rows) < period:
+            continue
+
+        rolling_sum = sum(row["close_price"] for row in price_rows[:period])
+
+        for end_index in range(period - 1, len(price_rows)):
+            if end_index > period - 1:
+                rolling_sum += price_rows[end_index]["close_price"]
+                rolling_sum -= price_rows[end_index - period]["close_price"]
+
+            if end_index < first_stored_index:
+                continue
+
+            average = rolling_sum / period
+            signals.append(
+                {
+                    "signal_date": price_rows[end_index]["price_date"],
+                    "period": period,
+                    "average": average,
+                }
+            )
+
+    return signals
+
+
 def upsert_moving_average_signal(
     connection: duckdb.DuckDBPyConnection,
     security_id: int,
@@ -154,8 +190,12 @@ def upsert_moving_average_signal(
 def calculate_and_store_moving_averages(
     connection: duckdb.DuckDBPyConnection,
     config_dir: Optional[Path] = None,
+    history_days: int = DEFAULT_MOVING_AVERAGE_HISTORY_DAYS,
 ) -> Dict[str, Any]:
-    """Calculate and store latest simple moving averages for active securities."""
+    """Calculate and store dated simple moving averages for active securities."""
+    if history_days <= 0:
+        raise ValueError("moving_average_history_days must be greater than zero.")
+
     periods = load_moving_average_periods(config_dir)
     securities = get_active_securities(connection)
     summary = {
@@ -164,30 +204,61 @@ def calculate_and_store_moving_averages(
         "skipped_tickers": {},
     }
 
-    for security in securities:
-        ticker = security["ticker"]
-        price_rows = get_closing_prices(connection, security["security_id"])
-        latest_date = price_rows[-1]["price_date"] if price_rows else None
-        averages = calculate_latest_moving_averages(price_rows, periods)
+    print(f"Total tickers for moving averages: {len(securities)}")
 
-        if not averages:
+    for ticker_number, security in enumerate(securities, start=1):
+        ticker = security["ticker"]
+        print(
+            f"Processing ticker {ticker_number} of {len(securities)}: {ticker}"
+        )
+
+        price_rows = get_closing_prices(connection, security["security_id"])
+        moving_average_rows = calculate_historical_moving_averages(
+            price_rows,
+            periods,
+            history_days=history_days,
+        )
+
+        if not moving_average_rows:
             summary["skipped_tickers"][ticker] = (
                 "Not enough daily price history for the configured moving "
                 "average periods."
             )
+            print(f"Rows written for {ticker}: 0")
             continue
 
-        for period, average in averages.items():
+        rows_written_for_ticker = 0
+        for row in moving_average_rows:
             upsert_moving_average_signal(
                 connection,
                 security["security_id"],
-                latest_date,
-                period,
-                average,
+                row["signal_date"],
+                row["period"],
+                row["average"],
             )
             summary["signals_written"] += 1
+            rows_written_for_ticker += 1
+
+        print(f"Rows written for {ticker}: {rows_written_for_ticker}")
+
+    print("Moving average calculation summary")
+    print(f"Total tickers checked: {summary['tickers_checked']}")
+    print(f"Total moving average rows written: {summary['signals_written']}")
+    skipped_count = len(summary["skipped_tickers"])
+    print(f"Tickers skipped for insufficient history: {skipped_count}")
 
     return summary
+
+
+def _first_stored_price_index(
+    price_rows: List[Dict[str, Any]],
+    history_days: int,
+) -> int:
+    """Return the first price index whose SMA rows should be stored."""
+    if not price_rows:
+        return 0
+
+    return max(0, len(price_rows) - history_days)
 
 
 def _get_table_columns(

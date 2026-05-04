@@ -6,6 +6,9 @@ from market_sentinel.analytics.crossovers import (
     detect_and_store_crossovers,
     detect_crossover,
 )
+from market_sentinel.analytics.moving_averages import (
+    calculate_and_store_moving_averages,
+)
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 
@@ -88,6 +91,28 @@ def insert_sma(
         """,
         [signal_id, security_id, signal_date, period, value, "SMA"],
     )
+
+
+def insert_daily_prices(connection, security_id: int, prices) -> None:
+    """Insert fake daily close prices."""
+    for day_number, close_price in enumerate(prices, start=1):
+        connection.execute(
+            """
+            INSERT INTO daily_prices (
+                price_id,
+                security_id,
+                price_date,
+                close_price
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                security_id * 1000 + day_number,
+                security_id,
+                f"2026-01-{day_number:02d}",
+                float(close_price),
+            ],
+        )
 
 
 def test_detect_crossover_rules() -> None:
@@ -176,3 +201,45 @@ def test_detect_crossovers_skips_missing_values(tmp_path: Path) -> None:
         assert saved_count == 0
     finally:
         connection.close()
+
+
+def test_detect_crossovers_after_historical_moving_average_calculation(
+    tmp_path: Path,
+) -> None:
+    """Crossover detection should work from dated historical SMA rows."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, [10.0] * 30 + [100.0])
+
+        moving_average_summary = calculate_and_store_moving_averages(
+            connection,
+            config_dir,
+        )
+        crossover_summary = detect_and_store_crossovers(connection, config_dir)
+        saved_row = connection.execute(
+            """
+            SELECT signal_date, signal_type, crossover_direction
+            FROM moving_average_signals
+            WHERE signal_type = 'BULLISH_CROSSOVER'
+            """
+        ).fetchone()
+
+        assert moving_average_summary["signals_written"] == 27
+        assert crossover_summary["crossovers_written"] == 1
+        assert _normalise_row(saved_row) == (
+            "2026-01-31",
+            "BULLISH_CROSSOVER",
+            "BULLISH_CROSSOVER",
+        )
+    finally:
+        connection.close()
+
+
+def _normalise_row(row):
+    """Convert date-like values in one fetched row to ISO strings."""
+    return tuple(
+        value.isoformat() if hasattr(value, "isoformat") else value
+        for value in row
+    )

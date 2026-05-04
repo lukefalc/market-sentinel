@@ -40,9 +40,11 @@ def main() -> None:
     print(f"Wrote {summary['crossovers_written']} crossover signals")
 
     if summary["skipped"]:
-        print("Some ticker pairs did not have enough moving average history:")
-        for pair_key, message in summary["skipped"].items():
-            print(f"- {pair_key}: {message}")
+        skipped_count = len(summary["skipped"])
+        print(
+            "Some ticker pairs did not have enough moving average history: "
+            f"{skipped_count} skipped."
+        )
 
 
 if __name__ == "__main__":

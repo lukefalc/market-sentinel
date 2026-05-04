@@ -168,6 +168,16 @@ dividend_download_pause_seconds: 3
 dividend_retry_batch_size: 5
 ```
 
+Moving average calculation also shows ticker-by-ticker progress. By default it
+stores SMA rows only for the most recent 260 price dates, while still using
+earlier prices to calculate longer averages such as the 200-day SMA.
+
+The setting lives in `config/settings.yaml`:
+
+```yaml
+moving_average_history_days: 260
+```
+
 ## Update The S&P 500 Universe
 
 The S&P 500 universe can be refreshed from Wikipedia.

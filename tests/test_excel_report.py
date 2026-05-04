@@ -27,6 +27,8 @@ def write_report_settings(
     config_dir: Path,
     database_path: Path,
     excel_dir: str,
+    max_rows_per_sheet: int = 50000,
+    recent_days: int = 10,
 ) -> None:
     """Create settings with a custom Excel report output folder."""
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -34,6 +36,8 @@ def write_report_settings(
         "\n".join(
             [
                 f"database_path: {database_path}",
+                f"excel_max_rows_per_sheet: {max_rows_per_sheet}",
+                f"excel_moving_average_recent_days: {recent_days}",
                 "report_outputs:",
                 f"  excel_dir: {excel_dir}",
             ]
@@ -214,6 +218,7 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Moving Averages"]["A2"].value == "AAA"
+    assert workbook["Recent Moving Averages"]["A2"].value == "AAA"
     assert workbook["Crossover Signals"]["G2"].value == "BULLISH_CROSSOVER"
     assert workbook["Dividend Metrics"]["A2"].value == "AAA"
     assert workbook["High Dividend Stocks"]["A2"].value == "AAA"
@@ -298,6 +303,91 @@ def test_generate_excel_report_handles_missing_dividend_data(
     assert workbook["Dividend Metrics"].max_row == 1
     assert workbook["High Dividend Stocks"].max_row == 1
     assert workbook["Dividend Risk Flags"].max_row == 1
+
+
+def test_generate_excel_report_limits_large_moving_average_history(
+    tmp_path: Path,
+) -> None:
+    """Large SMA history should be trimmed so Excel row limits are never hit."""
+    config_dir = tmp_path / "config"
+    database_path = tmp_path / "data" / "market_sentinel.duckdb"
+    output_dir = tmp_path / "outputs" / "excel"
+    write_report_settings(
+        config_dir,
+        database_path,
+        str(output_dir),
+        max_rows_per_sheet=5,
+        recent_days=30,
+    )
+    connection = open_duckdb_connection(config_dir)
+    initialise_database_schema(connection)
+
+    try:
+        connection.execute(
+            """
+            INSERT INTO securities (
+                security_id,
+                ticker,
+                name,
+                market,
+                region,
+                currency,
+                sector
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                1,
+                "AAA",
+                "Example A",
+                "S&P 500",
+                "United States",
+                "USD",
+                "Technology",
+            ],
+        )
+
+        for index in range(20):
+            connection.execute(
+                """
+                INSERT INTO moving_average_signals (
+                    signal_id,
+                    security_id,
+                    signal_date,
+                    moving_average_period_days,
+                    moving_average_value,
+                    signal_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    index + 1,
+                    1,
+                    f"2026-05-{index + 1:02d}",
+                    7,
+                    100.0 + index,
+                    "SMA",
+                ],
+            )
+
+        output_path = generate_excel_report(
+            connection,
+            report_date=date(2026, 5, 3),
+            config_dir=config_dir,
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path)
+    summary_text = "\n".join(
+        str(workbook["Summary"][f"A{row}"].value)
+        for row in range(1, workbook["Summary"].max_row + 1)
+    )
+
+    assert workbook["Moving Averages"].max_row == 2
+    assert workbook["Moving Averages"]["B2"].value.date() == date(2026, 5, 20)
+    assert workbook["Recent Moving Averages"].max_row == 6
+    assert "Recent Moving Averages was limited to 5 rows" in summary_text
 
 
 def test_generate_excel_report_script_uses_updated_report_code(

@@ -11,6 +11,9 @@ price_download_pause_seconds: 3
 dividend_download_batch_size: 20
 dividend_download_pause_seconds: 3
 dividend_retry_batch_size: 5
+moving_average_history_days: 260
+excel_max_rows_per_sheet: 50000
+excel_moving_average_recent_days: 10
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF

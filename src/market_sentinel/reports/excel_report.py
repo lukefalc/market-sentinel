@@ -4,9 +4,9 @@ This module reads summary data from DuckDB and writes a beginner-friendly Excel
 workbook using openpyxl. It does not create PDF reports.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 from openpyxl import Workbook
@@ -16,11 +16,15 @@ from openpyxl.utils import get_column_letter
 from market_sentinel.config.loader import load_named_config
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "excel"
+DEFAULT_MAX_ROWS_PER_SHEET = 50000
+DEFAULT_MOVING_AVERAGE_RECENT_DAYS = 10
+EXCEL_MAX_DATA_ROWS = 1048575
 EXPECTED_WORKSHEET_TITLES = [
     "Summary",
     "Securities",
     "Latest Prices",
     "Moving Averages",
+    "Recent Moving Averages",
     "Crossover Signals",
     "Dividend Metrics",
     "High Dividend Stocks",
@@ -47,29 +51,61 @@ def generate_excel_report(
     config_dir: Optional[Path] = None,
 ) -> Path:
     """Generate an Excel report from the local DuckDB database."""
-    target_dir = _resolve_excel_output_dir(output_dir, config_dir)
+    settings = _load_excel_settings(config_dir)
+    target_dir = _resolve_excel_output_dir(output_dir, settings)
     output_path = target_dir / default_report_filename(report_date)
+    max_rows_per_sheet = _positive_int_setting(
+        settings,
+        "excel_max_rows_per_sheet",
+        DEFAULT_MAX_ROWS_PER_SHEET,
+    )
+    max_rows_per_sheet = min(max_rows_per_sheet, EXCEL_MAX_DATA_ROWS)
+    recent_days = _positive_int_setting(
+        settings,
+        "excel_moving_average_recent_days",
+        DEFAULT_MOVING_AVERAGE_RECENT_DAYS,
+    )
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         workbook = Workbook()
         summary_sheet = workbook.active
         summary_sheet.title = EXPECTED_WORKSHEET_TITLES[0]
-
-        _write_summary_sheet(summary_sheet, connection)
+        limit_notes: List[str] = []
 
         report_sections = [
             ("Securities", _fetch_securities),
             ("Latest Prices", _fetch_latest_prices),
             ("Moving Averages", _fetch_moving_averages),
-            ("Crossover Signals", _fetch_crossover_signals),
+            (
+                "Recent Moving Averages",
+                lambda report_connection: _fetch_recent_moving_averages(
+                    report_connection,
+                    recent_days,
+                ),
+            ),
+            (
+                "Crossover Signals",
+                lambda report_connection: _fetch_crossover_signals(
+                    report_connection,
+                    recent_days,
+                ),
+            ),
             ("Dividend Metrics", _fetch_dividend_metrics),
             ("High Dividend Stocks", _fetch_high_dividend_stocks),
             ("Dividend Risk Flags", _fetch_dividend_risk_flags),
         ]
 
         for sheet_title, fetch_data in report_sections:
-            _write_table_sheet(workbook, sheet_title, fetch_data(connection))
+            _write_table_sheet(
+                workbook,
+                sheet_title,
+                fetch_data(connection),
+                max_rows_per_sheet,
+                limit_notes,
+            )
+
+        _write_summary_sheet(summary_sheet, connection, limit_notes)
 
         workbook.save(output_path)
     except duckdb.Error as error:
@@ -89,16 +125,11 @@ def generate_excel_report(
 
 def _resolve_excel_output_dir(
     output_dir: Optional[Path],
-    config_dir: Optional[Path],
+    settings: Dict[str, Any],
 ) -> Path:
     """Resolve the Excel output directory from arguments, settings, or fallback."""
     if output_dir is not None:
         return Path(output_dir).expanduser()
-
-    try:
-        settings = load_named_config("settings", config_dir)
-    except FileNotFoundError:
-        return DEFAULT_OUTPUT_DIR
 
     configured_dir = settings.get("report_outputs", {}).get("excel_dir")
 
@@ -108,7 +139,40 @@ def _resolve_excel_output_dir(
     return DEFAULT_OUTPUT_DIR
 
 
-def _write_summary_sheet(sheet, connection: duckdb.DuckDBPyConnection) -> None:
+def _load_excel_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
+    """Load settings for Excel reports, falling back to safe defaults."""
+    try:
+        loaded_settings = load_named_config("settings", config_dir)
+    except FileNotFoundError:
+        return {}
+
+    return loaded_settings
+
+
+def _positive_int_setting(
+    settings: Dict[str, Any],
+    setting_name: str,
+    default_value: int,
+) -> int:
+    """Read a positive integer setting with a safe fallback."""
+    raw_value = settings.get(setting_name, default_value)
+
+    try:
+        parsed_value = int(raw_value)
+    except (TypeError, ValueError):
+        return default_value
+
+    if parsed_value < 1:
+        return default_value
+
+    return parsed_value
+
+
+def _write_summary_sheet(
+    sheet,
+    connection: duckdb.DuckDBPyConnection,
+    limit_notes: Sequence[str],
+) -> None:
     """Write the Summary worksheet."""
     rows = [
         ("Metric", "Value"),
@@ -122,6 +186,13 @@ def _write_summary_sheet(sheet, connection: duckdb.DuckDBPyConnection) -> None:
         ("Moving Average Rows", _count_rows(connection, "moving_average_signals")),
         ("Latest Price Date", _latest_price_date(connection) or "No prices yet"),
     ]
+
+    if limit_notes:
+        rows.append(("", ""))
+        rows.append(("Report Notes", ""))
+        for note in limit_notes:
+            rows.append((note, ""))
+
     _write_rows(sheet, rows)
 
 
@@ -129,11 +200,21 @@ def _write_table_sheet(
     workbook: Workbook,
     title: str,
     table_data: Tuple[List[str], List[Sequence[Any]]],
+    max_rows_per_sheet: int,
+    limit_notes: List[str],
 ) -> None:
     """Create one worksheet from headers and rows."""
     sheet = workbook.create_sheet(title)
     headers, rows = table_data
-    _write_rows(sheet, [headers] + rows)
+    visible_rows = rows[:max_rows_per_sheet]
+
+    if len(rows) > max_rows_per_sheet:
+        limit_notes.append(
+            f"{title} was limited to {max_rows_per_sheet} rows because the "
+            "full dataset is larger than a readable Excel daily report."
+        )
+
+    _write_rows(sheet, [headers] + visible_rows)
 
 
 def _write_rows(sheet, rows: Iterable[Sequence[Any]]) -> None:
@@ -222,8 +303,51 @@ def _fetch_latest_prices(
 def _fetch_moving_averages(
     connection: duckdb.DuckDBPyConnection,
 ) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch latest SMA rows."""
+    """Fetch the latest SMA value for each ticker and moving-average period."""
     headers = ["Ticker", "Signal Date", "Period Days", "SMA Value"]
+    rows = connection.execute(
+        """
+        WITH latest_signal_dates AS (
+            SELECT
+                security_id,
+                moving_average_period_days,
+                MAX(signal_date) AS latest_signal_date
+            FROM moving_average_signals
+            WHERE signal_type = 'SMA'
+            GROUP BY security_id, moving_average_period_days
+        )
+        SELECT
+            securities.ticker,
+            signals.signal_date,
+            signals.moving_average_period_days,
+            signals.moving_average_value
+        FROM moving_average_signals AS signals
+        INNER JOIN latest_signal_dates
+            ON signals.security_id = latest_signal_dates.security_id
+           AND signals.moving_average_period_days =
+               latest_signal_dates.moving_average_period_days
+           AND signals.signal_date = latest_signal_dates.latest_signal_date
+        INNER JOIN securities
+            ON signals.security_id = securities.security_id
+        WHERE signals.signal_type = 'SMA'
+        ORDER BY securities.ticker, signals.moving_average_period_days
+        """
+    ).fetchall()
+    return headers, rows
+
+
+def _fetch_recent_moving_averages(
+    connection: duckdb.DuckDBPyConnection,
+    recent_days: int,
+) -> Tuple[List[str], List[Sequence[Any]]]:
+    """Fetch recent SMA history for quick checking without exporting all history."""
+    headers = ["Ticker", "Signal Date", "Period Days", "SMA Value"]
+    latest_signal_date = _latest_signal_date(connection, "SMA")
+
+    if latest_signal_date is None:
+        return headers, []
+
+    cutoff_date = latest_signal_date - timedelta(days=recent_days - 1)
     rows = connection.execute(
         """
         SELECT
@@ -235,16 +359,21 @@ def _fetch_moving_averages(
         INNER JOIN securities
             ON signals.security_id = securities.security_id
         WHERE signals.signal_type = 'SMA'
-        ORDER BY securities.ticker, signals.moving_average_period_days
-        """
+          AND signals.signal_date >= ?
+        ORDER BY signals.signal_date DESC,
+                 securities.ticker,
+                 signals.moving_average_period_days
+        """,
+        [cutoff_date],
     ).fetchall()
     return headers, rows
 
 
 def _fetch_crossover_signals(
     connection: duckdb.DuckDBPyConnection,
+    recent_days: int,
 ) -> Tuple[List[str], List[Sequence[Any]]]:
-    """Fetch crossover signal rows."""
+    """Fetch recent actual crossover signal rows."""
     headers = [
         "Ticker",
         "Signal Date",
@@ -254,6 +383,15 @@ def _fetch_crossover_signals(
         "Long SMA",
         "Direction",
     ]
+    latest_signal_date = _latest_signal_date(
+        connection,
+        ("BULLISH_CROSSOVER", "BEARISH_CROSSOVER"),
+    )
+
+    if latest_signal_date is None:
+        return headers, []
+
+    cutoff_date = latest_signal_date - timedelta(days=recent_days - 1)
     rows = connection.execute(
         """
         SELECT
@@ -268,8 +406,10 @@ def _fetch_crossover_signals(
         INNER JOIN securities
             ON signals.security_id = securities.security_id
         WHERE signals.signal_type IN ('BULLISH_CROSSOVER', 'BEARISH_CROSSOVER')
+          AND signals.signal_date >= ?
         ORDER BY signals.signal_date DESC, securities.ticker
-        """
+        """,
+        [cutoff_date],
     ).fetchall()
     return headers, rows
 
@@ -407,3 +547,37 @@ def _count_dividend_risk_flags(connection: duckdb.DuckDBPyConnection) -> int:
 def _latest_price_date(connection: duckdb.DuckDBPyConnection) -> Any:
     """Return the latest daily price date."""
     return connection.execute("SELECT MAX(price_date) FROM daily_prices").fetchone()[0]
+
+
+def _latest_signal_date(
+    connection: duckdb.DuckDBPyConnection,
+    signal_type: Any,
+) -> Optional[date]:
+    """Return the latest moving-average signal date for one or more signal types."""
+    if isinstance(signal_type, tuple):
+        placeholders = ", ".join(["?"] * len(signal_type))
+        query = (
+            "SELECT MAX(signal_date) FROM moving_average_signals "
+            f"WHERE signal_type IN ({placeholders})"
+        )
+        latest_value = connection.execute(query, list(signal_type)).fetchone()[0]
+    else:
+        latest_value = connection.execute(
+            """
+            SELECT MAX(signal_date)
+            FROM moving_average_signals
+            WHERE signal_type = ?
+            """,
+            [signal_type],
+        ).fetchone()[0]
+
+    if latest_value is None:
+        return None
+
+    if isinstance(latest_value, datetime):
+        return latest_value.date()
+
+    if isinstance(latest_value, date):
+        return latest_value
+
+    return date.fromisoformat(str(latest_value)[:10])
