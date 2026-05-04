@@ -4,9 +4,10 @@ environment: development
 log_level: INFO
 database_path: data/market_sentinel.duckdb
 report_output_dir: reports
-market_data:
-  batch_size: 50
-  pause_seconds_between_batches: 1
+price_download_batch_size: 50
+price_backfill_period: 5y
+price_daily_lookback_days: 10
+price_download_pause_seconds: 1
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF

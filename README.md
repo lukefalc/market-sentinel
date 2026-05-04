@@ -121,16 +121,35 @@ Then run the daily process:
 PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
-Market data updates are processed in batches so large universes, such as the
-S&P 500, show regular progress instead of appearing stuck. The default batch
-size is 50 tickers, with a 1 second pause between batches.
+Market data has two modes:
+
+- Daily update mode is for normal daily runs. It downloads only recent data.
+- Backfill mode is for first-time setup or occasional historical refreshes.
+
+The normal daily command is:
+
+```bash
+PYTHONPATH=src python3 scripts/update_market_data.py
+```
+
+The historical backfill command is:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_market_data.py
+```
+
+Both modes use yfinance batches so large universes, such as the S&P 500, show
+regular progress. The default batch size is 50 tickers, the daily lookback is
+10 days, the backfill period is 5 years, and the pause between batches is
+1 second.
 
 You can adjust this in `config/settings.yaml`:
 
 ```yaml
-market_data:
-  batch_size: 50
-  pause_seconds_between_batches: 1
+price_download_batch_size: 50
+price_backfill_period: 5y
+price_daily_lookback_days: 10
+price_download_pause_seconds: 1
 ```
 
 For FTSE 350, update the CSV file manually when you want to add, remove, or

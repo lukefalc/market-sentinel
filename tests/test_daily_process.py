@@ -82,3 +82,50 @@ def test_email_step_handles_missing_settings_safely(monkeypatch, capsys) -> None
     assert result == {"email_sent": False}
     assert "Daily alert email was not sent" in captured.out
     assert "email settings are incomplete" in captured.out
+
+
+def test_daily_process_uses_daily_market_data_mode(monkeypatch) -> None:
+    """The daily process should use recent daily updates, not backfill mode."""
+    calls = []
+
+    def fake_load_named_config(name):
+        return {
+            "price_download_batch_size": 12,
+            "price_daily_lookback_days": 3,
+            "price_download_pause_seconds": 0,
+        }
+
+    def fake_update_recent_daily_prices(
+        connection,
+        batch_size,
+        lookback_days,
+        pause_seconds,
+    ):
+        calls.append(
+            {
+                "connection": connection,
+                "batch_size": batch_size,
+                "lookback_days": lookback_days,
+                "pause_seconds": pause_seconds,
+            }
+        )
+        return {"tickers_checked": 0}
+
+    monkeypatch.setattr(run_daily_process, "load_named_config", fake_load_named_config)
+    monkeypatch.setattr(
+        run_daily_process,
+        "update_recent_daily_prices",
+        fake_update_recent_daily_prices,
+    )
+
+    result = run_daily_process._update_market_data_daily("fake connection")
+
+    assert result == {"tickers_checked": 0}
+    assert calls == [
+        {
+            "connection": "fake connection",
+            "batch_size": 12,
+            "lookback_days": 3,
+            "pause_seconds": 0.0,
+        }
+    ]

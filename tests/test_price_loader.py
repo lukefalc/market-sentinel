@@ -1,8 +1,14 @@
 """Tests for daily price loading."""
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
-from market_sentinel.data.price_loader import update_daily_prices
+from market_sentinel.data.price_loader import (
+    backfill_daily_prices,
+    update_daily_prices,
+    update_recent_daily_prices,
+)
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 
@@ -219,3 +225,182 @@ def test_update_daily_prices_reports_failed_tickers_per_batch(
     assert "Failed tickers in this batch:" in captured.out
     assert "- BBB:" in captured.out
     assert "Starting batch 2 of 2" in captured.out
+
+
+def test_update_daily_prices_uses_yfinance_batch_download(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Production downloads should call yfinance once per ticker batch."""
+    connection = open_test_database(tmp_path)
+    download_calls = []
+
+    def fake_yfinance_download(tickers, **options):
+        download_calls.append({"tickers": tickers, "options": options})
+        return {
+            ticker: fake_downloader(ticker, options.get("start"), options.get("end"))
+            for ticker in tickers
+        }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "yfinance",
+        SimpleNamespace(download=fake_yfinance_download),
+    )
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        insert_security(connection, 3, "CCC")
+
+        summary = update_daily_prices(
+            connection,
+            batch_size=2,
+            pause_seconds=0,
+            lookback_days=10,
+        )
+    finally:
+        connection.close()
+
+    assert summary["tickers_checked"] == 3
+    assert summary["price_rows_written"] == 6
+    assert summary["failed_tickers"] == {}
+    assert download_calls[0]["tickers"] == ["AAA", "BBB"]
+    assert download_calls[1]["tickers"] == ["CCC"]
+    assert download_calls[0]["options"]["start"]
+    assert "period" not in download_calls[0]["options"]
+
+
+def test_update_daily_prices_continues_after_failed_batch(
+    tmp_path: Path,
+) -> None:
+    """A failed batch should be reported while later batches still run."""
+    connection = open_test_database(tmp_path)
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        if "AAA" in tickers:
+            raise RuntimeError("temporary batch failure")
+
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        insert_security(connection, 3, "CCC")
+
+        summary = update_daily_prices(
+            connection,
+            batch_downloader=fake_batch_downloader,
+            batch_size=2,
+            pause_seconds=0,
+        )
+    finally:
+        connection.close()
+
+    assert summary["tickers_checked"] == 3
+    assert summary["price_rows_written"] == 2
+    assert "AAA" in summary["failed_tickers"]
+    assert "BBB" in summary["failed_tickers"]
+    assert "CCC" not in summary["failed_tickers"]
+
+
+def test_update_recent_daily_prices_uses_lookback_start_date(
+    tmp_path: Path,
+) -> None:
+    """Daily update mode should use a recent start date instead of a period."""
+    connection = open_test_database(tmp_path)
+    batch_calls = []
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        batch_calls.append(
+            {"start_date": start_date, "end_date": end_date, "period": period}
+        )
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        summary = update_recent_daily_prices(
+            connection,
+            batch_size=50,
+            lookback_days=10,
+            pause_seconds=0,
+            batch_downloader=fake_batch_downloader,
+        )
+    finally:
+        connection.close()
+
+    assert summary["tickers_checked"] == 1
+    assert batch_calls[0]["start_date"]
+    assert batch_calls[0]["period"] is None
+
+
+def test_update_daily_prices_daily_mode_passes_recent_start_date(
+    tmp_path: Path,
+) -> None:
+    """Daily mode should pass a start date and no yfinance period."""
+    connection = open_test_database(tmp_path)
+    batch_calls = []
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        batch_calls.append(
+            {"start_date": start_date, "end_date": end_date, "period": period}
+        )
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        update_daily_prices(
+            connection,
+            batch_downloader=fake_batch_downloader,
+            batch_size=50,
+            pause_seconds=0,
+            mode="daily",
+            lookback_days=10,
+        )
+    finally:
+        connection.close()
+
+    assert batch_calls[0]["start_date"]
+    assert batch_calls[0]["period"] is None
+
+
+def test_backfill_daily_prices_uses_backfill_period(
+    tmp_path: Path,
+) -> None:
+    """Backfill mode should use the configured yfinance period."""
+    connection = open_test_database(tmp_path)
+    batch_calls = []
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        batch_calls.append(
+            {"start_date": start_date, "end_date": end_date, "period": period}
+        )
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        summary = backfill_daily_prices(
+            connection,
+            batch_downloader=fake_batch_downloader,
+            batch_size=50,
+            pause_seconds=0,
+            backfill_period="5y",
+        )
+    finally:
+        connection.close()
+
+    assert summary["tickers_checked"] == 1
+    assert batch_calls[0]["start_date"] is None
+    assert batch_calls[0]["period"] == "5y"

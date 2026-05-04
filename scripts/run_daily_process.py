@@ -30,7 +30,13 @@ from market_sentinel.analytics.moving_averages import (  # noqa: E402
 from market_sentinel.analytics.risk_flags import (  # noqa: E402
     calculate_and_store_risk_flags,
 )
-from market_sentinel.data.price_loader import update_daily_prices  # noqa: E402
+from market_sentinel.config.loader import load_named_config  # noqa: E402
+from market_sentinel.data.price_loader import (  # noqa: E402
+    DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
+    DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
+    DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
+    update_recent_daily_prices,
+)
 from market_sentinel.data.universe_loader import (  # noqa: E402
     default_universe_files,
     load_universe_files,
@@ -73,7 +79,7 @@ def daily_steps() -> List[Step]:
     """Return the ordered daily process steps."""
     return [
         ("Load universe", _load_universe),
-        ("Update market data", update_daily_prices),
+        ("Update market data", _update_market_data_daily),
         ("Calculate moving averages", calculate_and_store_moving_averages),
         ("Detect crossovers", detect_and_store_crossovers),
         ("Calculate dividends", calculate_and_store_dividends),
@@ -87,6 +93,30 @@ def daily_steps() -> List[Step]:
 def _load_universe(connection):
     """Load configured universe CSV files."""
     return load_universe_files(connection, default_universe_files())
+
+
+def _update_market_data_daily(connection):
+    """Run the fast daily market data update mode."""
+    settings = load_named_config("settings")
+    batch_size = int(
+        settings.get("price_download_batch_size", DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE)
+    )
+    lookback_days = int(
+        settings.get("price_daily_lookback_days", DEFAULT_PRICE_DAILY_LOOKBACK_DAYS)
+    )
+    pause_seconds = float(
+        settings.get(
+            "price_download_pause_seconds",
+            DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
+        )
+    )
+
+    return update_recent_daily_prices(
+        connection,
+        batch_size=batch_size,
+        lookback_days=lookback_days,
+        pause_seconds=pause_seconds,
+    )
 
 
 def _send_daily_alert_email(connection):

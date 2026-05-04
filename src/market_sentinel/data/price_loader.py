@@ -5,16 +5,25 @@ the database. It uses yfinance for real downloads, but tests can pass fake
 download functions so the test suite never needs live internet access.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 import duckdb
 
 Downloader = Callable[[str, Optional[str], Optional[str]], Any]
+BatchDownloader = Callable[
+    [List[str], Optional[str], Optional[str], Optional[str]],
+    Any,
+]
 SleepFunction = Callable[[float], None]
-DEFAULT_BATCH_SIZE = 50
-DEFAULT_BATCH_PAUSE_SECONDS = 1.0
+DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE = 50
+DEFAULT_PRICE_DAILY_LOOKBACK_DAYS = 10
+DEFAULT_PRICE_DOWNLOAD_LOOKBACK_DAYS = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS
+DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 1.0
+DEFAULT_PRICE_BACKFILL_PERIOD = "5y"
+DEFAULT_BATCH_SIZE = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE
+DEFAULT_BATCH_PAUSE_SECONDS = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS
 
 
 def get_active_securities(
@@ -65,6 +74,28 @@ def download_daily_prices(
     return normalise_price_data(raw_prices)
 
 
+def download_daily_prices_for_batch(
+    tickers: List[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: Optional[str] = None,
+    batch_downloader: Optional[BatchDownloader] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Download daily prices for a batch of tickers."""
+    download_function = batch_downloader or _download_batch_from_yfinance
+
+    try:
+        raw_prices = download_function(tickers, start_date, end_date, period)
+    except Exception as error:
+        raise RuntimeError(
+            "Could not download daily prices for this batch. Check your "
+            "internet connection and the ticker symbols in the batch. "
+            f"Details: {error}"
+        ) from error
+
+    return normalise_batch_price_data(raw_prices, tickers)
+
+
 def normalise_price_data(raw_prices: Any) -> List[Dict[str, Any]]:
     """Convert downloaded price data into dictionaries for database storage."""
     if raw_prices is None:
@@ -96,6 +127,60 @@ def normalise_price_data(raw_prices: Any) -> List[Dict[str, Any]]:
         )
 
     return price_rows
+
+
+def normalise_batch_price_data(
+    raw_prices: Any,
+    tickers: List[str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Convert batch price data into rows grouped by ticker."""
+    if isinstance(raw_prices, dict):
+        return {
+            ticker: normalise_price_data(raw_prices.get(ticker))
+            for ticker in tickers
+        }
+
+    if raw_prices is None or getattr(raw_prices, "empty", False):
+        return {ticker: [] for ticker in tickers}
+
+    if len(tickers) == 1:
+        return {tickers[0]: normalise_price_data(raw_prices)}
+
+    if hasattr(raw_prices, "columns") and hasattr(raw_prices.columns, "nlevels"):
+        if raw_prices.columns.nlevels > 1:
+            return _normalise_multi_ticker_frame(raw_prices, tickers)
+
+    return {ticker: [] for ticker in tickers}
+
+
+def _normalise_multi_ticker_frame(
+    raw_prices: Any,
+    tickers: List[str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Normalise a yfinance multi-ticker DataFrame."""
+    price_rows_by_ticker = {}
+
+    for ticker in tickers:
+        ticker_frame = _select_ticker_frame(raw_prices, ticker)
+        price_rows_by_ticker[ticker] = normalise_price_data(ticker_frame)
+
+    return price_rows_by_ticker
+
+
+def _select_ticker_frame(raw_prices: Any, ticker: str) -> Any:
+    """Select one ticker from a yfinance multi-ticker DataFrame."""
+    columns = raw_prices.columns
+
+    for level_number in range(columns.nlevels):
+        if ticker in columns.get_level_values(level_number):
+            return raw_prices.xs(
+                ticker,
+                axis=1,
+                level=level_number,
+                drop_level=True,
+            )
+
+    return None
 
 
 def upsert_daily_prices(
@@ -178,8 +263,12 @@ def update_daily_prices(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     downloader: Optional[Downloader] = None,
+    batch_downloader: Optional[BatchDownloader] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     pause_seconds: float = DEFAULT_BATCH_PAUSE_SECONDS,
+    lookback_days: int = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
+    mode: str = "daily",
+    backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
     sleep_function: SleepFunction = time.sleep,
 ) -> Dict[str, Any]:
     """Download and store daily prices for every active ticker."""
@@ -189,6 +278,8 @@ def update_daily_prices(
     if pause_seconds < 0:
         raise ValueError("Market data batch pause must be zero or greater.")
 
+    effective_start_date = _resolve_start_date(start_date, lookback_days, mode)
+    download_period = _resolve_download_period(mode, backfill_period)
     securities = get_active_securities(connection)
     summary = {
         "tickers_checked": len(securities),
@@ -210,26 +301,28 @@ def update_daily_prices(
         print(f"Starting batch {batch_number} of {total_batches}")
         print(f"Tickers in this batch: {', '.join(batch_tickers)}")
 
-        for security in batch:
-            ticker = security["ticker"]
+        if downloader is not None:
+            batch_rows_written = _update_batch_with_single_ticker_downloader(
+                connection,
+                batch,
+                effective_start_date,
+                end_date,
+                downloader,
+                batch_failed_tickers,
+            )
+        else:
+            batch_rows_written = _update_batch_with_batch_downloader(
+                connection,
+                batch,
+                effective_start_date,
+                end_date,
+                download_period,
+                batch_downloader,
+                batch_failed_tickers,
+            )
 
-            try:
-                price_rows = download_daily_prices(
-                    ticker,
-                    start_date=start_date,
-                    end_date=end_date,
-                    downloader=downloader,
-                )
-                rows_written = upsert_daily_prices(
-                    connection,
-                    security["security_id"],
-                    price_rows,
-                )
-                batch_rows_written += rows_written
-                summary["price_rows_written"] += rows_written
-            except RuntimeError as error:
-                batch_failed_tickers[ticker] = str(error)
-                summary["failed_tickers"][ticker] = str(error)
+        summary["price_rows_written"] += batch_rows_written
+        summary["failed_tickers"].update(batch_failed_tickers)
 
         print(f"Rows written in this batch: {batch_rows_written}")
 
@@ -258,6 +351,155 @@ def update_daily_prices(
     return summary
 
 
+def update_recent_daily_prices(
+    connection: duckdb.DuckDBPyConnection,
+    batch_size: int = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
+    lookback_days: int = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
+    pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
+    batch_downloader: Optional[BatchDownloader] = None,
+) -> Dict[str, Any]:
+    """Run the normal daily price update mode."""
+    return update_daily_prices(
+        connection,
+        batch_size=batch_size,
+        lookback_days=lookback_days,
+        pause_seconds=pause_seconds,
+        batch_downloader=batch_downloader,
+        mode="daily",
+    )
+
+
+def backfill_daily_prices(
+    connection: duckdb.DuckDBPyConnection,
+    batch_size: int = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
+    backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
+    pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
+    batch_downloader: Optional[BatchDownloader] = None,
+) -> Dict[str, Any]:
+    """Run the larger historical price backfill mode."""
+    return update_daily_prices(
+        connection,
+        batch_size=batch_size,
+        pause_seconds=pause_seconds,
+        mode="backfill",
+        backfill_period=backfill_period,
+        batch_downloader=batch_downloader,
+    )
+
+
+def _update_batch_with_single_ticker_downloader(
+    connection: duckdb.DuckDBPyConnection,
+    batch: List[Dict[str, Any]],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    downloader: Downloader,
+    batch_failed_tickers: Dict[str, str],
+) -> int:
+    """Update one batch by downloading one ticker at a time."""
+    batch_rows_written = 0
+
+    for security in batch:
+        ticker = security["ticker"]
+
+        try:
+            price_rows = download_daily_prices(
+                ticker,
+                start_date=start_date,
+                end_date=end_date,
+                downloader=downloader,
+            )
+            batch_rows_written += upsert_daily_prices(
+                connection,
+                security["security_id"],
+                price_rows,
+            )
+        except RuntimeError as error:
+            batch_failed_tickers[ticker] = str(error)
+
+    return batch_rows_written
+
+
+def _update_batch_with_batch_downloader(
+    connection: duckdb.DuckDBPyConnection,
+    batch: List[Dict[str, Any]],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    period: Optional[str],
+    batch_downloader: Optional[BatchDownloader],
+    batch_failed_tickers: Dict[str, str],
+) -> int:
+    """Update one batch using one yfinance request for all tickers."""
+    batch_tickers = [security["ticker"] for security in batch]
+
+    try:
+        price_rows_by_ticker = download_daily_prices_for_batch(
+            batch_tickers,
+            start_date=start_date,
+            end_date=end_date,
+            period=period,
+            batch_downloader=batch_downloader,
+        )
+    except RuntimeError as error:
+        for ticker in batch_tickers:
+            batch_failed_tickers[ticker] = str(error)
+        return 0
+
+    batch_rows_written = 0
+
+    for security in batch:
+        ticker = security["ticker"]
+        price_rows = price_rows_by_ticker.get(ticker, [])
+
+        if not price_rows:
+            batch_failed_tickers[ticker] = (
+                "No recent price rows were returned for this ticker."
+            )
+            continue
+
+        try:
+            batch_rows_written += upsert_daily_prices(
+                connection,
+                security["security_id"],
+                price_rows,
+            )
+        except RuntimeError as error:
+            batch_failed_tickers[ticker] = str(error)
+
+    return batch_rows_written
+
+
+def _resolve_start_date(
+    start_date: Optional[str],
+    lookback_days: int,
+    mode: str,
+) -> Optional[str]:
+    """Return the start date for a normal daily update."""
+    if start_date:
+        return start_date
+
+    if mode == "backfill":
+        return None
+
+    if mode != "daily":
+        raise ValueError("Price download mode must be either daily or backfill.")
+
+    if lookback_days <= 0:
+        return None
+
+    return (date.today() - timedelta(days=lookback_days)).isoformat()
+
+
+def _resolve_download_period(mode: str, backfill_period: str) -> Optional[str]:
+    """Return the yfinance period for the selected download mode."""
+    if mode == "daily":
+        return None
+
+    if mode == "backfill":
+        return backfill_period
+
+    raise ValueError("Price download mode must be either daily or backfill.")
+
+
 def _chunk_securities(
     securities: List[Dict[str, Any]],
     batch_size: int,
@@ -267,6 +509,41 @@ def _chunk_securities(
         securities[start_index : start_index + batch_size]
         for start_index in range(0, len(securities), batch_size)
     ]
+
+
+def _download_batch_from_yfinance(
+    tickers: List[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    period: Optional[str],
+) -> Any:
+    """Download prices for a batch of tickers with yfinance."""
+    try:
+        import yfinance as yf
+    except ImportError as error:
+        raise RuntimeError(
+            "yfinance is not installed. Install the project dependencies with "
+            'pip install -e ".[dev]" and try again.'
+        ) from error
+
+    options = {
+        "auto_adjust": False,
+        "progress": False,
+        "interval": "1d",
+        "threads": True,
+        "group_by": "column",
+    }
+
+    if start_date:
+        options["start"] = start_date
+    if end_date:
+        options["end"] = end_date
+    if period:
+        options["period"] = period
+    elif not start_date and not end_date:
+        options["period"] = "max"
+
+    return yf.download(tickers, **options)
 
 
 def _download_from_yfinance(

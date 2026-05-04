@@ -101,19 +101,38 @@ This runs the daily steps in order:
 Email is safe by default. If email alerts are disabled, the project prints a
 friendly message and does not send anything.
 
-When market data is updated, tickers are processed in batches. This is normal
-and helps the project handle large universes like the S&P 500 without looking
-stuck.
+Market data has two modes.
 
-By default, each batch has 50 tickers and the project pauses 1 second between
+Daily update mode is for normal daily runs. It downloads only recent prices:
+
+```bash
+PYTHONPATH=src python3 scripts/update_market_data.py
+```
+
+Backfill mode is for first-time setup or occasional historical refreshes. It
+downloads a larger historical period and can take much longer:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_market_data.py
+```
+
+The full daily process uses daily update mode only. It does not run the slower
+backfill.
+
+Both modes process tickers in yfinance batches. This is normal and helps the
+project handle large universes like the S&P 500 without looking stuck.
+
+By default, each batch has 50 tickers, daily mode downloads the last 10 days,
+backfill mode downloads 5 years, and the project pauses 1 second between
 batches.
 
 To change this, edit `config/settings.yaml`:
 
 ```yaml
-market_data:
-  batch_size: 50
-  pause_seconds_between_batches: 1
+price_download_batch_size: 50
+price_backfill_period: 5y
+price_daily_lookback_days: 10
+price_download_pause_seconds: 1
 ```
 
 During the update you should see:

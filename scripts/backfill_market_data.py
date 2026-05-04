@@ -1,8 +1,8 @@
-"""Update daily market prices from yfinance.
+"""Backfill historical market prices from yfinance.
 
 Run this script from the project root with:
 
-    python3 scripts/update_market_data.py
+    PYTHONPATH=src python3 scripts/backfill_market_data.py
 """
 
 import sys
@@ -16,31 +16,31 @@ if str(SRC_DIR) not in sys.path:
 
 from market_sentinel.config.loader import load_named_config  # noqa: E402
 from market_sentinel.data.price_loader import (  # noqa: E402
+    DEFAULT_PRICE_BACKFILL_PERIOD,
     DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
-    DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
-    update_recent_daily_prices,
+    backfill_daily_prices,
 )
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
 
 
 def main() -> None:
-    """Download and store daily prices for securities in DuckDB."""
+    """Download and store historical prices for securities in DuckDB."""
     connection = None
 
     try:
         connection = open_duckdb_connection()
         initialise_database_schema(connection)
-        batch_size, lookback_days, pause_seconds = load_market_data_settings()
-        summary = update_recent_daily_prices(
+        batch_size, backfill_period, pause_seconds = load_backfill_settings()
+        summary = backfill_daily_prices(
             connection,
             batch_size=batch_size,
-            lookback_days=lookback_days,
+            backfill_period=backfill_period,
             pause_seconds=pause_seconds,
         )
     except (RuntimeError, ValueError, FileNotFoundError) as error:
-        print(f"Market data update failed: {error}", file=sys.stderr)
+        print(f"Market data backfill failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error
     finally:
         if connection is not None:
@@ -50,13 +50,13 @@ def main() -> None:
     print(f"Wrote {summary['price_rows_written']} daily price rows")
 
     if summary["failed_tickers"]:
-        print("Some tickers could not be updated:")
+        print("Some tickers could not be backfilled:")
         for ticker, message in summary["failed_tickers"].items():
             print(f"- {ticker}: {message}")
 
 
-def load_market_data_settings():
-    """Read market data batching settings from config/settings.yaml."""
+def load_backfill_settings():
+    """Read market data backfill settings from config/settings.yaml."""
     settings = load_named_config("settings")
 
     try:
@@ -66,11 +66,8 @@ def load_market_data_settings():
                 DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
             )
         )
-        lookback_days = int(
-            settings.get(
-                "price_daily_lookback_days",
-                DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
-            )
+        backfill_period = str(
+            settings.get("price_backfill_period", DEFAULT_PRICE_BACKFILL_PERIOD)
         )
         pause_seconds = float(
             settings.get(
@@ -80,12 +77,12 @@ def load_market_data_settings():
         )
     except (TypeError, ValueError) as error:
         raise ValueError(
-            "Market data settings must use numbers for "
-            "price_download_batch_size, price_daily_lookback_days, and "
-            "price_download_pause_seconds."
+            "Market data backfill settings must use a number for "
+            "price_download_batch_size, text like 5y for price_backfill_period, "
+            "and a number for price_download_pause_seconds."
         ) from error
 
-    return batch_size, lookback_days, pause_seconds
+    return batch_size, backfill_period, pause_seconds
 
 
 if __name__ == "__main__":
