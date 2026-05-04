@@ -101,6 +101,30 @@ This runs the daily steps in order:
 Email is safe by default. If email alerts are disabled, the project prints a
 friendly message and does not send anything.
 
+When market data is updated, tickers are processed in batches. This is normal
+and helps the project handle large universes like the S&P 500 without looking
+stuck.
+
+By default, each batch has 50 tickers and the project pauses 1 second between
+batches.
+
+To change this, edit `config/settings.yaml`:
+
+```yaml
+market_data:
+  batch_size: 50
+  pause_seconds_between_batches: 1
+```
+
+During the update you should see:
+
+- Total tickers.
+- Current batch number.
+- Tickers in the current batch.
+- Rows written for the batch.
+- Failed tickers for the batch.
+- A final summary.
+
 ## Update The S&P 500 Universe
 
 The S&P 500 universe can be refreshed from Wikipedia.

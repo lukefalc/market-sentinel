@@ -6,11 +6,15 @@ download functions so the test suite never needs live internet access.
 """
 
 from datetime import date, datetime
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import duckdb
 
 Downloader = Callable[[str, Optional[str], Optional[str]], Any]
+SleepFunction = Callable[[float], None]
+DEFAULT_BATCH_SIZE = 50
+DEFAULT_BATCH_PAUSE_SECONDS = 1.0
 
 
 def get_active_securities(
@@ -174,8 +178,17 @@ def update_daily_prices(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     downloader: Optional[Downloader] = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    pause_seconds: float = DEFAULT_BATCH_PAUSE_SECONDS,
+    sleep_function: SleepFunction = time.sleep,
 ) -> Dict[str, Any]:
     """Download and store daily prices for every active ticker."""
+    if batch_size <= 0:
+        raise ValueError("Market data batch size must be greater than zero.")
+
+    if pause_seconds < 0:
+        raise ValueError("Market data batch pause must be zero or greater.")
+
     securities = get_active_securities(connection)
     summary = {
         "tickers_checked": len(securities),
@@ -183,25 +196,77 @@ def update_daily_prices(
         "failed_tickers": {},
     }
 
-    for security in securities:
-        ticker = security["ticker"]
+    total_tickers = len(securities)
+    batches = _chunk_securities(securities, batch_size)
+    total_batches = len(batches)
 
-        try:
-            price_rows = download_daily_prices(
-                ticker,
-                start_date=start_date,
-                end_date=end_date,
-                downloader=downloader,
-            )
-            summary["price_rows_written"] += upsert_daily_prices(
-                connection,
-                security["security_id"],
-                price_rows,
-            )
-        except RuntimeError as error:
-            summary["failed_tickers"][ticker] = str(error)
+    print(f"Total tickers to update: {total_tickers}")
+
+    for batch_number, batch in enumerate(batches, start=1):
+        batch_tickers = [security["ticker"] for security in batch]
+        batch_rows_written = 0
+        batch_failed_tickers = {}
+
+        print(f"Starting batch {batch_number} of {total_batches}")
+        print(f"Tickers in this batch: {', '.join(batch_tickers)}")
+
+        for security in batch:
+            ticker = security["ticker"]
+
+            try:
+                price_rows = download_daily_prices(
+                    ticker,
+                    start_date=start_date,
+                    end_date=end_date,
+                    downloader=downloader,
+                )
+                rows_written = upsert_daily_prices(
+                    connection,
+                    security["security_id"],
+                    price_rows,
+                )
+                batch_rows_written += rows_written
+                summary["price_rows_written"] += rows_written
+            except RuntimeError as error:
+                batch_failed_tickers[ticker] = str(error)
+                summary["failed_tickers"][ticker] = str(error)
+
+        print(f"Rows written in this batch: {batch_rows_written}")
+
+        if batch_failed_tickers:
+            print("Failed tickers in this batch:")
+            for ticker, message in batch_failed_tickers.items():
+                print(f"- {ticker}: {message}")
+        else:
+            print("Failed tickers in this batch: none")
+
+        if batch_number < total_batches and pause_seconds > 0:
+            print(f"Pausing {pause_seconds:g} seconds before the next batch")
+            sleep_function(pause_seconds)
+
+    print("Market data update summary")
+    print(f"Total tickers checked: {summary['tickers_checked']}")
+    print(f"Total price rows written: {summary['price_rows_written']}")
+
+    if summary["failed_tickers"]:
+        print("Failed tickers:")
+        for ticker, message in summary["failed_tickers"].items():
+            print(f"- {ticker}: {message}")
+    else:
+        print("Failed tickers: none")
 
     return summary
+
+
+def _chunk_securities(
+    securities: List[Dict[str, Any]],
+    batch_size: int,
+) -> List[List[Dict[str, Any]]]:
+    """Split securities into batches."""
+    return [
+        securities[start_index : start_index + batch_size]
+        for start_index in range(0, len(securities), batch_size)
+    ]
 
 
 def _download_from_yfinance(

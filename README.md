@@ -121,6 +121,18 @@ Then run the daily process:
 PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
+Market data updates are processed in batches so large universes, such as the
+S&P 500, show regular progress instead of appearing stuck. The default batch
+size is 50 tickers, with a 1 second pause between batches.
+
+You can adjust this in `config/settings.yaml`:
+
+```yaml
+market_data:
+  batch_size: 50
+  pause_seconds_between_batches: 1
+```
+
 For FTSE 350, update the CSV file manually when you want to add, remove, or
 correct stocks.
 

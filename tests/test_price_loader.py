@@ -144,3 +144,78 @@ def test_update_daily_prices_continues_after_failed_ticker(
         assert saved_count == 2
     finally:
         connection.close()
+
+
+def test_update_daily_prices_processes_tickers_in_batches(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Large universes should be processed in visible batches."""
+    connection = open_test_database(tmp_path)
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    try:
+        for security_id, ticker in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE"], 1):
+            insert_security(connection, security_id, ticker)
+
+        summary = update_daily_prices(
+            connection,
+            downloader=fake_downloader,
+            batch_size=2,
+            pause_seconds=0.25,
+            sleep_function=fake_sleep,
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+
+    assert summary["tickers_checked"] == 5
+    assert summary["price_rows_written"] == 10
+    assert summary["failed_tickers"] == {}
+    assert sleep_calls == [0.25, 0.25]
+    assert "Total tickers to update: 5" in captured.out
+    assert "Starting batch 1 of 3" in captured.out
+    assert "Tickers in this batch: AAA, BBB" in captured.out
+    assert "Rows written in this batch: 4" in captured.out
+    assert "Failed tickers in this batch: none" in captured.out
+    assert "Total price rows written: 10" in captured.out
+
+
+def test_update_daily_prices_reports_failed_tickers_per_batch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Batch progress should include failed tickers and keep going."""
+    connection = open_test_database(tmp_path)
+
+    def mixed_downloader(ticker: str, start_date, end_date):
+        if ticker == "BBB":
+            raise RuntimeError("temporary provider failure")
+        return fake_downloader(ticker, start_date, end_date)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        insert_security(connection, 3, "CCC")
+
+        summary = update_daily_prices(
+            connection,
+            downloader=mixed_downloader,
+            batch_size=2,
+            pause_seconds=0,
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+
+    assert summary["tickers_checked"] == 3
+    assert summary["price_rows_written"] == 4
+    assert "BBB" in summary["failed_tickers"]
+    assert "Failed tickers in this batch:" in captured.out
+    assert "- BBB:" in captured.out
+    assert "Starting batch 2 of 2" in captured.out
