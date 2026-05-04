@@ -9,12 +9,15 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Tuple
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from market_sentinel.alerts.email_notifier import send_daily_alert_email  # noqa: E402
 from market_sentinel.analytics.crossovers import (  # noqa: E402
     detect_and_store_crossovers,
 )
@@ -42,6 +45,7 @@ Step = Tuple[str, Callable]
 
 def main() -> None:
     """Run each daily process step in order."""
+    load_dotenv()
     connection = None
     step_name = "Open database"
 
@@ -76,12 +80,27 @@ def daily_steps() -> List[Step]:
         ("Calculate risk flags", calculate_and_store_risk_flags),
         ("Generate Excel report", generate_excel_report),
         ("Generate PDF report", generate_pdf_report),
+        ("Send daily alert email", _send_daily_alert_email),
     ]
 
 
 def _load_universe(connection):
     """Load configured universe CSV files."""
     return load_universe_files(connection, default_universe_files())
+
+
+def _send_daily_alert_email(connection):
+    """Send the optional daily email alert summary."""
+    try:
+        email_sent = send_daily_alert_email(connection)
+    except ValueError as error:
+        print(
+            "Daily alert email was not sent because the email settings are "
+            f"incomplete. {error}"
+        )
+        return {"email_sent": False}
+
+    return {"email_sent": email_sent}
 
 
 def _print_step_result(step_name: str, result) -> None:
