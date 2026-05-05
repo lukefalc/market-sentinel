@@ -25,6 +25,16 @@ chart_include_sma_periods:
   - 7
   - 30
   - 50
+candidate_stop_short_window_days: 20
+candidate_trailing_stop_percent: 20
+candidate_include_50_sma_stop: true
+candidate_include_20_day_extreme_stop: true
+candidate_include_trailing_reference: true
+candidate_grade_stop_distance_warning_percent: 12
+candidate_recent_strong_days: 2
+pdf_include_setup_grades:
+  - Strong Buy Setup
+  - Strong Sell Setup
 report_outputs:
   excel_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
   pdf_dir: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF

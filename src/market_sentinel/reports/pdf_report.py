@@ -24,6 +24,10 @@ from market_sentinel.reports.charts import generate_charts
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pdf"
 LANDSCAPE_PAGE_SIZE = landscape(A4)
+DEFAULT_PDF_INCLUDE_SETUP_GRADES = ["Strong Buy Setup", "Strong Sell Setup"]
+NO_STRONG_SETUPS_MESSAGE = (
+    "No strong buy or strong sell setups were found for this report period."
+)
 
 
 def default_report_filename(report_date: Optional[date] = None) -> str:
@@ -50,6 +54,7 @@ def generate_pdf_report(
         story = _build_report_story(
             selected_date,
             chart_summary,
+            settings,
         )
         document = SimpleDocTemplate(
             str(output_path),
@@ -101,32 +106,41 @@ def _load_pdf_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
 def _build_report_story(
     report_date: date,
     chart_summary: Optional[Dict[str, Any]] = None,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Build reportlab flowables for the PDF."""
     styles = getSampleStyleSheet()
     chart_summary = chart_summary or {}
-    story = _index_page_flowables(chart_summary, report_date, styles)
-    story.extend(_chart_flowables(chart_summary, styles, include_initial_break=True))
+    included_details = _included_chart_details(
+        chart_summary.get("chart_details", []),
+        settings or {},
+    )
+    story = _index_page_flowables(included_details, report_date, styles)
+    story.extend(_chart_flowables(included_details, styles, include_initial_break=True))
     return story
 
 
 def _index_page_flowables(
-    chart_summary: Dict[str, Any],
+    chart_details: Sequence[Dict[str, Any]],
     report_date: date,
     styles,
 ) -> List[Any]:
     """Build the first-page index of selected chart stocks."""
+    detail_count = len(chart_details)
+    summary_text = (
+        "Stocks shown below are strong buy and strong sell setup grades selected "
+        "for chart review."
+    )
+    if detail_count == 0:
+        summary_text = NO_STRONG_SETUPS_MESSAGE
+
     return [
         Paragraph("Market Sentinel Crossover Chart Report", styles["Title"]),
         Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
         Spacer(1, 8),
-        Paragraph(
-            "Stocks shown below are the latest crossover signals selected for "
-            "chart review.",
-            styles["Normal"],
-        ),
+        Paragraph(summary_text, styles["Normal"]),
         Spacer(1, 12),
-        _index_tables(chart_summary.get("chart_details", [])),
+        _index_tables(chart_details),
     ]
 
 
@@ -154,8 +168,8 @@ def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
 
 def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
     """Return one compact index table for up to 25 stocks."""
-    headers = ["Ticker", "Name", "Direction", "Crossed", "Days"]
-    table = Table([headers] + list(rows), colWidths=[48, 135, 55, 70, 62])
+    headers = ["Ticker", "Name", "Action grade", "Direction", "Crossed", "Days"]
+    table = Table([headers] + list(rows), colWidths=[38, 100, 82, 48, 58, 44])
     table.setStyle(
         TableStyle(
             [
@@ -185,7 +199,8 @@ def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
         rows.append(
             [
                 chart_detail.get("ticker", ""),
-                _shorten_name(chart_detail.get("company_name", "")),
+                _shorten_name(chart_detail.get("company_name", ""), max_length=20),
+                _candidate_action_grade(chart_detail),
                 first_signal.get("direction", ""),
                 crossover_date,
                 first_signal.get("days_since_crossover", ""),
@@ -204,17 +219,14 @@ def _shorten_name(name: str, max_length: int = 28) -> str:
 
 
 def _chart_flowables(
-    chart_summary: Dict[str, Any],
+    chart_details: Sequence[Dict[str, Any]],
     styles,
     include_initial_break: bool = True,
 ) -> List[Any]:
     """Build the selected trend chart section."""
     flowables: List[Any] = []
-    chart_details = chart_summary.get("chart_details", [])
 
     if not chart_details:
-        flowables.append(Paragraph("No recent crossover charts to show.", styles["Heading2"]))
-        flowables.append(Spacer(1, 12))
         return flowables
 
     if include_initial_break:
@@ -224,10 +236,9 @@ def _chart_flowables(
         path = Path(chart_detail["chart_path"])
         chart_group = [
             Paragraph(_chart_title(chart_detail), styles["Heading2"]),
-            Image(str(path), width=760, height=395, kind="proportional"),
-            Spacer(1, 10),
-            Paragraph(_selection_reason_text(chart_detail), styles["Normal"]),
-            Spacer(1, 12),
+            Image(str(path), width=760, height=315, kind="proportional"),
+            Spacer(1, 6),
+            _candidate_card_flowable(chart_detail, styles),
         ]
         flowables.append(KeepTogether(chart_group))
         if index < len(chart_details) - 1:
@@ -268,3 +279,273 @@ def _selection_reason_text(chart_detail: Dict[str, Any]) -> str:
         )
 
     return "<br/>".join(reasons)
+
+
+def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
+    """Return a compact trade candidate card for one chart page."""
+    candidate = chart_detail.get("trade_candidate") or _candidate_from_chart_detail(
+        chart_detail
+    )
+    rows = [
+        [
+            Paragraph("<b>Candidate review</b>", styles["Normal"]),
+            Paragraph(
+                "<b>Action grade: "
+                f"{_not_available(candidate.get('action_grade'))}</b> | "
+                f"Score: {_not_available(candidate.get('score'))} / "
+                f"{_not_available(candidate.get('max_score', 10))} | "
+                "Rule-based setup grade only. These are not trading instructions.",
+                styles["Normal"],
+            ),
+        ],
+        [
+            Paragraph("<b>Why</b>", styles["Normal"]),
+            Paragraph(_grade_reasons_text(candidate), styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>Caution</b>", styles["Normal"]),
+            Paragraph(_grade_cautions_text(candidate), styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>Ticker</b>", styles["Normal"]),
+            Paragraph(
+                " | ".join(
+                    [
+                        _not_available(candidate.get("ticker")),
+                        _not_available(candidate.get("company_name")),
+                        _not_available(candidate.get("market")),
+                    ]
+                ),
+                styles["Normal"],
+            ),
+        ],
+        [
+            Paragraph("<b>Signal</b>", styles["Normal"]),
+            Paragraph(_signal_summary(candidate), styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>Selected because</b>", styles["Normal"]),
+            Paragraph(_selection_reason_text(chart_detail), styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>Latest close</b>", styles["Normal"]),
+            Paragraph(
+                _format_price(
+                    candidate.get("latest_close_price"),
+                    candidate.get("currency"),
+                ),
+                styles["Normal"],
+            ),
+        ],
+        [
+            Paragraph("<b>Suggested review levels</b>", styles["Normal"]),
+            Paragraph(_review_levels_text(candidate), styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>Risk notes</b>", styles["Normal"]),
+            Paragraph(_risk_notes_text(candidate), styles["Normal"]),
+        ],
+    ]
+    table = Table(rows, colWidths=[132, 608])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF4F8")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#AAB7C4")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D7DEE6")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7.4),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return table
+
+
+def _candidate_from_chart_detail(chart_detail: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a minimal card model when charts were mocked in tests."""
+    first_signal = (chart_detail.get("signals") or [{}])[0]
+    return {
+        "ticker": chart_detail.get("ticker", ""),
+        "company_name": chart_detail.get("company_name", ""),
+        "market": chart_detail.get("market", ""),
+        "currency": chart_detail.get("currency", ""),
+        "signal_direction": first_signal.get("direction", ""),
+        "signal_description": first_signal.get("trend_description", "Not available"),
+        "crossover_date": first_signal.get("crossover_date"),
+        "days_since_crossover": first_signal.get(
+            "days_since_crossover",
+            "Not available",
+        ),
+        "latest_close_price": chart_detail.get("latest_close_price"),
+        "review_levels": chart_detail.get("review_levels", {}),
+        "action_grade": chart_detail.get("action_grade", "Track Only"),
+        "score": chart_detail.get("score", 0),
+        "max_score": chart_detail.get("max_score", 10),
+        "grade_reasons": chart_detail.get("grade_reasons", []),
+        "grade_cautions": chart_detail.get("grade_cautions", []),
+        "risk_notes": chart_detail.get("risk_notes", []),
+    }
+
+
+def _candidate_action_grade(chart_detail: Dict[str, Any]) -> str:
+    """Return the action grade for index display."""
+    candidate = chart_detail.get("trade_candidate") or {}
+    return _not_available(candidate.get("action_grade", "Track Only"))
+
+
+def _sorted_chart_details(
+    chart_details: Sequence[Dict[str, Any]],
+    include_grades: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Return chart details in the requested PDF page order."""
+    filtered_details = [
+        chart_detail
+        for chart_detail in chart_details
+        if _candidate_action_grade(chart_detail) in _include_setup_grades(include_grades)
+    ]
+    return sorted(filtered_details, key=_chart_detail_sort_key)
+
+
+def _included_chart_details(
+    chart_details: Sequence[Dict[str, Any]],
+    settings: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Return chart details included in the PDF after grade filtering."""
+    return _sorted_chart_details(
+        chart_details,
+        include_grades=_pdf_include_setup_grades(settings),
+    )
+
+
+def _pdf_include_setup_grades(settings: Dict[str, Any]) -> List[str]:
+    """Read which setup grades should appear in the PDF."""
+    return _include_setup_grades(settings.get("pdf_include_setup_grades"))
+
+
+def _include_setup_grades(raw_grades: Optional[Sequence[str]]) -> List[str]:
+    """Return a cleaned grade allow-list with a safe default."""
+    if not raw_grades:
+        return DEFAULT_PDF_INCLUDE_SETUP_GRADES
+
+    if isinstance(raw_grades, str):
+        raw_grades = [raw_grades]
+
+    grades = [str(grade) for grade in raw_grades if str(grade).strip()]
+    return grades or DEFAULT_PDF_INCLUDE_SETUP_GRADES
+
+
+def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort chart pages by setup grade, recency, score, then ticker."""
+    candidate = chart_detail.get("trade_candidate") or {}
+    first_signal = (chart_detail.get("signals") or [{}])[0]
+    crossover_date = first_signal.get("crossover_date")
+
+    if hasattr(crossover_date, "toordinal"):
+        crossover_ordinal = crossover_date.toordinal()
+    else:
+        crossover_ordinal = 0
+
+    return (
+        _grade_sort_rank(candidate.get("action_grade")),
+        -crossover_ordinal,
+        -(candidate.get("score") or 0),
+        chart_detail.get("ticker", ""),
+    )
+
+
+def _grade_sort_rank(action_grade: Any) -> int:
+    """Return the requested PDF sort rank for a setup grade."""
+    ranks = {
+        "Strong Buy Setup": 0,
+        "Strong Sell Setup": 1,
+        "Buy Setup": 2,
+        "Track Only": 3,
+        "Sell Setup": 4,
+    }
+    return ranks.get(str(action_grade), 3)
+
+
+def _signal_summary(candidate: Dict[str, Any]) -> str:
+    """Return signal fields as compact card text."""
+    crossover_date = candidate.get("crossover_date")
+    if hasattr(crossover_date, "isoformat"):
+        crossover_date = crossover_date.isoformat()
+
+    return (
+        f"{_not_available(candidate.get('signal_direction'))}: "
+        f"{_not_available(candidate.get('signal_description'))} | "
+        f"Crossover date: {_not_available(crossover_date)} | "
+        f"Days since crossover: {_not_available(candidate.get('days_since_crossover'))}"
+    )
+
+
+def _review_levels_text(candidate: Dict[str, Any]) -> str:
+    """Return formatted planning reference levels."""
+    review_levels = candidate.get("review_levels") or {}
+
+    if not review_levels:
+        return "Not available"
+
+    return " | ".join(
+        f"{label} {_format_price(value, candidate.get('currency'))}"
+        for label, value in review_levels.items()
+    )
+
+
+def _grade_reasons_text(candidate: Dict[str, Any]) -> str:
+    """Return the positive reasons behind the setup grade."""
+    reasons = candidate.get("grade_reasons") or []
+
+    if not reasons:
+        return "Not available"
+
+    return " | ".join(str(reason) for reason in reasons[:3])
+
+
+def _grade_cautions_text(candidate: Dict[str, Any]) -> str:
+    """Return cautions behind the setup grade."""
+    cautions = candidate.get("grade_cautions") or []
+
+    if not cautions:
+        return "No major rule-based cautions."
+
+    return " | ".join(str(caution) for caution in cautions[:3])
+
+
+def _risk_notes_text(candidate: Dict[str, Any]) -> str:
+    """Return compact risk notes text."""
+    risk_notes = candidate.get("risk_notes") or []
+
+    if not risk_notes:
+        return "Not available"
+
+    return " | ".join(str(note) for note in risk_notes)
+
+
+def _format_price(value: Any, currency: Optional[str] = None) -> str:
+    """Format a price-like value for PDF text."""
+    if value is None:
+        return "Not available"
+
+    try:
+        formatted_value = f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "Not available"
+
+    if currency:
+        return f"{currency} {formatted_value}"
+
+    return formatted_value
+
+
+def _not_available(value: Any) -> str:
+    """Return readable text for optional values."""
+    if value is None or value == "":
+        return "Not available"
+
+    return str(value)

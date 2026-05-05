@@ -364,7 +364,7 @@ def test_generate_charts_sorts_and_deduplicates_crossover_tickers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Charts should sort by latest crossover and avoid duplicate ticker pages."""
+    """Charts should sort by action grade and avoid duplicate ticker pages."""
     connection, config_dir, _chart_dir = open_test_database(tmp_path)
 
     monkeypatch.setattr(charts_module, "_write_chart_image", fake_chart_writer)
@@ -377,12 +377,21 @@ def test_generate_charts_sorts_and_deduplicates_crossover_tickers(
 
     assert [detail["ticker"] for detail in summary["chart_details"]] == [
         "AAA",
-        "BBB",
         "CCC",
+        "BBB",
     ]
     assert len(summary["chart_details"][0]["signals"]) == 2
     assert summary["chart_details"][0]["signals"][0]["direction"] == "Bullish"
-    assert summary["chart_details"][1]["signals"][0]["direction"] == "Bearish"
+    assert summary["chart_details"][2]["signals"][0]["direction"] == "Bearish"
+    assert summary["chart_details"][0]["trade_candidate"]["ticker"] == "AAA"
+    assert (
+        summary["chart_details"][0]["trade_candidate"]["review_levels"]["50-day SMA"]
+        == 105.5
+    )
+    assert (
+        "No dividend risk flag."
+        in summary["chart_details"][0]["trade_candidate"]["risk_notes"]
+    )
 
 
 def test_generate_charts_limits_selected_tickers_to_fifty(

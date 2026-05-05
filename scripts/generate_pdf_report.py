@@ -1,4 +1,4 @@
-"""Generate the market-sentinel PDF summary report.
+"""Generate the market-sentinel PDF trade candidate chart report.
 
 Run this script from the project root with:
 

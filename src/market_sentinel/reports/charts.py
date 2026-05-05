@@ -14,6 +14,7 @@ import duckdb
 from market_sentinel.analytics.crossovers import DEFAULT_CROSSOVER_RECENT_DAYS
 from market_sentinel.analytics.crossovers import describe_crossover
 from market_sentinel.analytics.crossovers import format_days_since_crossover
+from market_sentinel.analytics.trade_candidates import build_trade_candidate
 from market_sentinel.config.loader import load_named_config
 
 DEFAULT_CHART_OUTPUT_DIR = Path("outputs") / "charts"
@@ -98,9 +99,11 @@ def generate_charts(
     print(f"Chart folder: {target_dir}")
 
     generated_files: List[Path] = []
+    chart_details: List[Dict[str, Any]] = []
     skipped: Dict[str, str] = {}
 
-    for index, ticker in enumerate(selected_tickers, start=1):
+    for index, selection in enumerate(selected_signals, start=1):
+        ticker = selection["ticker"]
         print(f"[{index}/{len(selected_tickers)}] Generating chart for {ticker}")
         try:
             chart_data = _fetch_chart_data(
@@ -134,27 +137,65 @@ def generate_charts(
             close_price_linewidth,
         )
         generated_files.append(output_path)
+        chart_details.append(
+            {
+                **selection,
+                "chart_path": output_path,
+                "trade_candidate": build_trade_candidate(
+                    connection,
+                    ticker,
+                    (selection.get("signals") or [None])[0],
+                    config_dir=config_dir,
+                ),
+            }
+        )
         print(f"Saved chart: {output_path}")
 
     print(
         "Chart generation complete: "
         f"{len(generated_files)} created, {len(skipped)} skipped"
     )
+    chart_details = sorted(chart_details, key=_chart_detail_sort_key)
 
     return {
         "tickers_checked": len(selected_tickers),
         "charts_created": len(generated_files),
-        "chart_paths": generated_files,
-        "chart_details": [
-            {
-                **selection,
-                "chart_path": chart_path,
-            }
-            for selection, chart_path in zip(selected_signals, generated_files)
-        ],
+        "chart_paths": [detail["chart_path"] for detail in chart_details],
+        "chart_details": chart_details,
         "skipped": skipped,
         "output_dir": target_dir,
     }
+
+
+def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort chart pages by setup grade, recency, score, then ticker."""
+    candidate = chart_detail.get("trade_candidate") or {}
+    first_signal = (chart_detail.get("signals") or [{}])[0]
+    crossover_date = first_signal.get("crossover_date")
+
+    if hasattr(crossover_date, "toordinal"):
+        crossover_ordinal = crossover_date.toordinal()
+    else:
+        crossover_ordinal = 0
+
+    return (
+        _grade_sort_rank(candidate.get("action_grade")),
+        -crossover_ordinal,
+        -(candidate.get("score") or 0),
+        chart_detail.get("ticker", ""),
+    )
+
+
+def _grade_sort_rank(action_grade: Any) -> int:
+    """Return the requested PDF sort rank for a setup grade."""
+    ranks = {
+        "Strong Buy Setup": 0,
+        "Buy Setup": 1,
+        "Track Only": 2,
+        "Sell Setup": 3,
+        "Strong Sell Setup": 4,
+    }
+    return ranks.get(str(action_grade), 2)
 
 
 def _load_settings(config_dir: Optional[Path]) -> Dict[str, Any]:

@@ -9,10 +9,14 @@ from market_sentinel.database.schema import initialise_database_schema
 from market_sentinel.reports import pdf_report as pdf_report_module
 from market_sentinel.reports.pdf_report import (
     LANDSCAPE_PAGE_SIZE,
+    _candidate_card_flowable,
     _chart_flowables,
     _index_page_flowables,
     _index_rows,
+    _included_chart_details,
+    _review_levels_text,
     _selection_reason_text,
+    _sorted_chart_details,
     generate_pdf_report,
 )
 
@@ -267,8 +271,39 @@ def test_generate_pdf_report_can_include_chart_images(
                     "company_name": "Example A",
                     "market": "S&P 500",
                     "chart_path": chart_path,
+                    "trade_candidate": {
+                        "ticker": "AAA",
+                        "company_name": "Example A",
+                        "market": "S&P 500",
+                        "currency": "USD",
+                        "signal_direction": "Bullish",
+                        "signal_description": (
+                            "7-day trend line crossed above 30-day trend line"
+                        ),
+                        "crossover_date": date(2026, 5, 4),
+                        "days_since_crossover": "Today",
+                        "latest_close_price": 124.5,
+                        "review_levels": {
+                            "50-day SMA": 120.0,
+                            "20-day low": 118.2,
+                            "20% trailing reference": 99.6,
+                        },
+                        "action_grade": "Strong Buy Setup",
+                        "score": 7,
+                        "max_score": 10,
+                        "grade_reasons": [
+                            "Recent bullish crossover within 2 days.",
+                            "Latest close is above the 50-day SMA.",
+                        ],
+                        "grade_cautions": [],
+                        "risk_notes": [
+                            "Close price is above the 50-day trend line.",
+                            "Dividend risk flag present.",
+                        ],
+                    },
                     "signals": [
                         {
+                            "direction": "Bullish",
                             "trend_description": (
                                 "7-day trend line crossed above 30-day trend line"
                             ),
@@ -319,24 +354,10 @@ def test_chart_flowables_put_each_chart_on_its_own_page(tmp_path: Path) -> None:
     styles = pdf_report_module.getSampleStyleSheet()
 
     flowables = _chart_flowables(
-        {
-            "chart_details": [
-                {
-                    "ticker": "AAA",
-                    "company_name": "Example A",
-                    "market": "S&P 500",
-                    "chart_path": first_chart,
-                    "signals": [],
-                },
-                {
-                    "ticker": "BBB",
-                    "company_name": "Example B",
-                    "market": "S&P 500",
-                    "chart_path": second_chart,
-                    "signals": [],
-                },
-            ]
-        },
+        [
+            sample_chart_detail("AAA", first_chart),
+            sample_chart_detail("BBB", second_chart, action_grade="Strong Sell Setup"),
+        ],
         styles,
     )
     page_breaks = [
@@ -347,18 +368,83 @@ def test_chart_flowables_put_each_chart_on_its_own_page(tmp_path: Path) -> None:
     assert len(page_breaks) == 2
 
 
+def test_chart_flowables_include_chart_and_candidate_card(tmp_path: Path) -> None:
+    """One chart page should include both the chart image and candidate card."""
+    chart_path = tmp_path / "AAA_price_trend.png"
+    chart_path.write_bytes(_tiny_png_bytes())
+    styles = pdf_report_module.getSampleStyleSheet()
+
+    flowables = _chart_flowables(
+        [sample_chart_detail("AAA", chart_path)],
+        styles,
+    )
+    keep_together = flowables[1]
+
+    assert any(
+        isinstance(item, pdf_report_module.Image)
+        for item in keep_together._content
+    )
+    assert any(
+        isinstance(item, pdf_report_module.Table)
+        for item in keep_together._content
+    )
+    assert "Action grade: Strong Buy Setup" in _flowable_text(keep_together)
+    assert "Suggested review levels" in _flowable_text(keep_together)
+    assert "These are not trading instructions." in _flowable_text(keep_together)
+
+
+def test_candidate_card_text_appears_in_pdf_flowable(tmp_path: Path) -> None:
+    """Candidate card text should be present in the PDF page content model."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    chart_detail = sample_chart_detail("AAA", tmp_path / "AAA.png")
+
+    card = _candidate_card_flowable(chart_detail, styles)
+    card_text = _flowable_text(card)
+
+    assert "Candidate review" in card_text
+    assert "Action grade: Strong Buy Setup" in card_text
+    assert "Score: 8 / 10" in card_text
+    assert "Why" in card_text
+    assert "Caution" in card_text
+    assert "Bullish" in card_text
+    assert "7-day trend line crossed above 30-day trend line" in card_text
+    assert "Crossover date: 2026-05-04" in card_text
+    assert "USD 124.50" in card_text
+    assert "20-day low USD 118.20" in card_text
+    assert "Close price is above the 50-day trend line." in card_text
+
+
+def test_candidate_card_formats_missing_values_as_not_available() -> None:
+    """Missing reference values should be shown as Not available."""
+    text = _review_levels_text(
+        {
+            "currency": "USD",
+            "review_levels": {
+                "50-day SMA": None,
+                "20-day low": 118.2,
+            },
+        }
+    )
+
+    assert "50-day SMA Not available" in text
+    assert "20-day low USD 118.20" in text
+
+
 def test_pdf_index_page_is_generated_before_chart_pages(tmp_path: Path) -> None:
     """The PDF should start with a report index page."""
     styles = pdf_report_module.getSampleStyleSheet()
     chart_path = tmp_path / "AAA_price_trend.png"
     chart_path.write_bytes(_tiny_png_bytes())
-    chart_summary = {"chart_details": [sample_chart_detail("AAA", chart_path)]}
-
-    flowables = _index_page_flowables(chart_summary, date(2026, 5, 4), styles)
+    flowables = _index_page_flowables(
+        [sample_chart_detail("AAA", chart_path)],
+        date(2026, 5, 4),
+        styles,
+    )
 
     assert flowables[0].text == "Market Sentinel Crossover Chart Report"
     assert "2026-05-04" in flowables[1].text
     assert "Stocks shown below" in flowables[3].text
+    assert "Action grade" in _flowable_text(flowables)
 
 
 def test_pdf_index_rows_split_into_two_groups_of_25(tmp_path: Path) -> None:
@@ -388,6 +474,103 @@ def test_pdf_index_uses_same_order_as_chart_pages(tmp_path: Path) -> None:
     rows = _index_rows(chart_details)
 
     assert [row[0] for row in rows] == ["NEW", "BUL", "OLD"]
+
+
+def test_pdf_pages_sort_by_action_grade(tmp_path: Path) -> None:
+    """PDF chart pages should include only strong grades in requested order."""
+    chart_details = [
+        sample_chart_detail(
+            "SELL",
+            tmp_path / "SELL.png",
+            action_grade="Sell Setup",
+            score=4,
+            crossover_date=date(2026, 5, 5),
+        ),
+        sample_chart_detail(
+            "BUY",
+            tmp_path / "BUY.png",
+            action_grade="Buy Setup",
+            score=5,
+            crossover_date=date(2026, 5, 2),
+        ),
+        sample_chart_detail(
+            "STRB",
+            tmp_path / "STRB.png",
+            action_grade="Strong Buy Setup",
+            score=6,
+            crossover_date=date(2026, 5, 1),
+        ),
+        sample_chart_detail(
+            "TRK",
+            tmp_path / "TRK.png",
+            action_grade="Track Only",
+            score=2,
+            crossover_date=date(2026, 5, 4),
+        ),
+        sample_chart_detail(
+            "STRS",
+            tmp_path / "STRS.png",
+            action_grade="Strong Sell Setup",
+            score=8,
+            crossover_date=date(2026, 5, 5),
+        ),
+    ]
+
+    sorted_details = _sorted_chart_details(chart_details)
+
+    assert [detail["ticker"] for detail in sorted_details] == [
+        "STRB",
+        "STRS",
+    ]
+
+
+def test_pdf_filter_includes_strong_buy_and_strong_sell(tmp_path: Path) -> None:
+    """Only strong buy and strong sell setup charts should be included."""
+    chart_details = [
+        sample_chart_detail("STRB", tmp_path / "STRB.png", "Strong Buy Setup"),
+        sample_chart_detail("STRS", tmp_path / "STRS.png", "Strong Sell Setup"),
+        sample_chart_detail("BUY", tmp_path / "BUY.png", "Buy Setup"),
+        sample_chart_detail("SELL", tmp_path / "SELL.png", "Sell Setup"),
+        sample_chart_detail("TRK", tmp_path / "TRK.png", "Track Only"),
+    ]
+
+    included = _included_chart_details(chart_details, {})
+
+    assert [detail["ticker"] for detail in included] == ["STRB", "STRS"]
+
+
+def test_pdf_index_only_lists_included_grades(tmp_path: Path) -> None:
+    """The first-page index should list only stocks included in chart pages."""
+    chart_details = [
+        sample_chart_detail("STRB", tmp_path / "STRB.png", "Strong Buy Setup"),
+        sample_chart_detail("BUY", tmp_path / "BUY.png", "Buy Setup"),
+        sample_chart_detail("STRS", tmp_path / "STRS.png", "Strong Sell Setup"),
+    ]
+    included = _included_chart_details(chart_details, {})
+    rows = _index_rows(included)
+
+    assert [row[0] for row in rows] == ["STRB", "STRS"]
+    assert {row[2] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
+
+
+def test_pdf_empty_state_message_when_no_strong_setups(tmp_path: Path) -> None:
+    """The index should show a friendly message when no strong setups exist."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    chart_details = [
+        sample_chart_detail("BUY", tmp_path / "BUY.png", "Buy Setup"),
+        sample_chart_detail("SELL", tmp_path / "SELL.png", "Sell Setup"),
+        sample_chart_detail("TRK", tmp_path / "TRK.png", "Track Only"),
+    ]
+    included = _included_chart_details(chart_details, {})
+
+    flowables = _index_page_flowables(included, date(2026, 5, 4), styles)
+    chart_flowables = _chart_flowables(included, styles)
+
+    assert (
+        "No strong buy or strong sell setups were found for this report period."
+        in _flowable_text(flowables)
+    )
+    assert chart_flowables == []
 
 
 def test_pdf_selection_reason_text_includes_all_recent_signals() -> None:
@@ -432,22 +615,80 @@ def fake_generate_charts_without_images(connection, config_dir=None):
     }
 
 
-def sample_chart_detail(ticker: str, chart_path: Path):
+def sample_chart_detail(
+    ticker: str,
+    chart_path: Path,
+    action_grade: str = "Strong Buy Setup",
+    score: int = 8,
+    crossover_date: date = date(2026, 5, 4),
+):
     """Return one sample chart detail for PDF index tests."""
     return {
         "ticker": ticker,
         "company_name": f"{ticker} Example Holdings PLC",
         "market": "S&P 500",
         "chart_path": chart_path,
+        "trade_candidate": {
+            "ticker": ticker,
+            "company_name": f"{ticker} Example Holdings PLC",
+            "market": "S&P 500",
+            "currency": "USD",
+            "signal_direction": "Bullish",
+            "signal_description": "7-day trend line crossed above 30-day trend line",
+            "crossover_date": date(2026, 5, 4),
+            "days_since_crossover": "Today",
+            "latest_close_price": 124.5,
+            "review_levels": {
+                "50-day SMA": 120.0,
+                "20-day low": 118.2,
+                "20% trailing reference": 99.6,
+            },
+            "action_grade": action_grade,
+            "score": score,
+            "max_score": 10,
+            "grade_reasons": [
+                "Recent bullish crossover within 2 days.",
+                "Latest close is above the 50-day SMA.",
+            ],
+            "grade_cautions": [],
+            "risk_notes": [
+                "Close price is above the 50-day trend line.",
+                "No dividend risk flag.",
+            ],
+        },
         "signals": [
             {
                 "direction": "Bullish",
                 "trend_description": "7-day trend line crossed above 30-day trend line",
-                "crossover_date": date(2026, 5, 4),
+                "crossover_date": crossover_date,
                 "days_since_crossover": "Today",
             }
         ],
     }
+
+
+def _flowable_text(flowable) -> str:
+    """Collect text from simple reportlab flowables used in PDF tests."""
+    if isinstance(flowable, str):
+        return flowable
+
+    if hasattr(flowable, "text"):
+        return flowable.text
+
+    if hasattr(flowable, "_content"):
+        return " ".join(_flowable_text(item) for item in flowable._content)
+
+    if hasattr(flowable, "_cellvalues"):
+        return " ".join(
+            _flowable_text(cell)
+            for row in flowable._cellvalues
+            for cell in row
+        )
+
+    if isinstance(flowable, list):
+        return " ".join(_flowable_text(item) for item in flowable)
+
+    return ""
 
 
 def _tiny_png_bytes() -> bytes:

@@ -277,6 +277,57 @@ PDF reports are saved here:
 ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/PDF
 ```
 
+Each PDF starts with an index page, then keeps one chart per landscape page.
+Under each chart is a compact trade candidate review card. The card explains
+why the stock was selected, the crossover signal and date, latest close price,
+suggested review levels, and basic risk notes.
+
+These card levels are planning references, not trading instructions. They are
+controlled in `config/settings.yaml`:
+
+```yaml
+candidate_stop_short_window_days: 20
+candidate_trailing_stop_percent: 20
+candidate_include_50_sma_stop: true
+candidate_include_20_day_extreme_stop: true
+candidate_include_trailing_reference: true
+candidate_grade_stop_distance_warning_percent: 12
+candidate_recent_strong_days: 2
+pdf_include_setup_grades:
+  - Strong Buy Setup
+  - Strong Sell Setup
+```
+
+For bullish signals, the card shows the latest 50-day SMA when available, the
+lowest close from the latest 20 trading rows, and a 20% trailing reference below
+the latest close. For bearish signals, it shows the latest 50-day SMA when
+available, the highest close from the latest 20 trading rows, and a 20%
+trailing reference above the latest close. Missing values are shown as `Not
+available`.
+
+Each candidate also receives an `Action grade`:
+
+- `Strong Buy Setup`
+- `Buy Setup`
+- `Track Only`
+- `Sell Setup`
+- `Strong Sell Setup`
+
+This is a rule-based setup grade, not personalised financial advice. It is
+based only on technical conditions already stored by the project, including
+crossover recency, latest close versus the 50-day SMA, 7/30/50-day SMA
+alignment, dividend risk flags for bullish setups, and whether the stop/review
+distance is wider than the configured warning percentage.
+
+PDF chart pages include only the grades listed in `pdf_include_setup_grades`.
+By default, the PDF shows only `Strong Buy Setup` and `Strong Sell Setup`
+candidates. `Buy Setup`, `Sell Setup`, and `Track Only` candidates are not shown
+in the PDF, although the underlying candidate grading can still calculate them.
+
+PDF chart pages are sorted by strong buy setups first, strong sell setups
+second, then by most recent crossover, higher score, and ticker. The first-page
+index includes only the stocks that have chart pages in the PDF.
+
 Supporting chart images are saved here:
 
 ```text
