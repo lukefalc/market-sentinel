@@ -123,6 +123,7 @@ def build_trade_candidate(
         "days_since_crossover": signal.get("days_since_crossover") or "Not available",
         "latest_close_price": latest_close,
         "review_levels": review_levels,
+        "dividend_risk_flag": dividend_risk_flag,
         "action_grade": grade["action_grade"],
         "score": grade["score"],
         "max_score": 10,

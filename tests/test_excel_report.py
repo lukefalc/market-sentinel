@@ -294,6 +294,86 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert workbook["Dividend Metrics"]["A2"].value == "AAA"
     assert workbook["High Dividend Stocks"]["A2"].value == "AAA"
     assert workbook["Dividend Risk Flags"]["E2"].value == "Dividend yield is above 7%."
+    assert workbook["Trade Candidates"]["A1"].value == "Ticker"
+    assert workbook["Trade Candidates"]["E1"].value == "Action Grade"
+    assert workbook["Trade Candidates"]["A2"].value == "AAA"
+    assert workbook["Trade Candidates"]["E2"].value is not None
+    assert workbook["Trade Candidates"].auto_filter.ref is not None
+    assert workbook["Trade Candidates"].freeze_panes == "A2"
+
+
+def test_position_sizing_sheet_has_expected_labels_and_formulas(
+    tmp_path: Path,
+) -> None:
+    """Position Sizing should provide simple editable inputs and formulas."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "excel"
+
+    try:
+        output_path = generate_excel_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path, data_only=False)
+    sheet = workbook["Position Sizing"]
+
+    assert sheet["A2"].value == "Trading capital"
+    assert sheet["A3"].value == "Risk per trade %"
+    assert sheet["A4"].value == "Entry price"
+    assert sheet["A5"].value == "Stop price"
+    assert sheet["A6"].value == "Maximum £ risk"
+    assert sheet["B6"].value == "=B2*B3"
+    assert sheet["A7"].value == "Risk per unit/share/point"
+    assert sheet["B7"].value == "=ABS(B4-B5)"
+    assert sheet["A8"].value == "Suggested position size"
+    assert sheet["B8"].value == '=IF(B7=0,"Check entry/stop",ROUNDDOWN(B6/B7,0))'
+    assert "not financial advice" in sheet["B9"].value
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref is not None
+
+
+def test_trade_journal_sheet_has_expected_columns(tmp_path: Path) -> None:
+    """Trade Journal should provide a beginner-friendly blank table."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "excel"
+
+    try:
+        output_path = generate_excel_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path)
+    sheet = workbook["Trade Journal"]
+    headers = [cell.value for cell in sheet[1]]
+
+    assert headers == [
+        "Date reviewed",
+        "Ticker",
+        "Company name",
+        "Market",
+        "Action grade",
+        "Decision",
+        "Entry planned",
+        "Stop planned",
+        "Risk %",
+        "Trade taken?",
+        "Entry date",
+        "Exit date",
+        "Exit reason",
+        "Result",
+        "Notes",
+    ]
+    assert sheet["F2"].value == "Watch | Paper trade | Trade | Ignore"
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref is not None
 
 
 def test_generate_excel_report_creates_output_folder(tmp_path: Path) -> None:

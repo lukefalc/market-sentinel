@@ -13,6 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from market_sentinel.analytics.trade_candidates import build_trade_candidate
 from market_sentinel.analytics.crossovers import (
     DEFAULT_CROSSOVER_RECENT_DAYS,
     describe_crossover,
@@ -35,6 +36,9 @@ EXPECTED_WORKSHEET_TITLES = [
     "Dividend Metrics",
     "High Dividend Stocks",
     "Dividend Risk Flags",
+    "Trade Candidates",
+    "Position Sizing",
+    "Trade Journal",
 ]
 
 HEADER_FILL = PatternFill(
@@ -126,6 +130,20 @@ def generate_excel_report(
                 limit_notes,
             )
 
+        _write_table_sheet(
+            workbook,
+            "Trade Candidates",
+            _fetch_trade_candidates(
+                connection,
+                selected_date,
+                crossover_recent_days,
+                config_dir,
+            ),
+            max_rows_per_sheet,
+            limit_notes,
+        )
+        _write_position_sizing_sheet(workbook)
+        _write_trade_journal_sheet(workbook)
         _write_summary_sheet(summary_sheet, connection, limit_notes)
 
         workbook.save(output_path)
@@ -249,7 +267,79 @@ def _write_rows(sheet, rows: Iterable[Sequence[Any]]) -> None:
             cell.fill = HEADER_FILL
 
     sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
     _auto_size_columns(sheet)
+
+
+def _write_position_sizing_sheet(workbook: Workbook) -> None:
+    """Create a beginner-friendly position sizing calculator sheet."""
+    sheet = workbook.create_sheet("Position Sizing")
+    rows = [
+        ("Planning calculator", "Value", "Notes"),
+        ("Trading capital", 10000, "Example only - edit this input"),
+        ("Risk per trade %", 0.01, "Example 1% - edit this input"),
+        ("Entry price", 100, "Example only - edit this input"),
+        ("Stop price", 95, "Example only - edit this input"),
+        ("Maximum £ risk", "=B2*B3", "Trading capital times risk per trade"),
+        ("Risk per unit/share/point", "=ABS(B4-B5)", "Entry price minus stop price"),
+        (
+            "Suggested position size",
+            '=IF(B7=0,"Check entry/stop",ROUNDDOWN(B6/B7,0))',
+            "Planning size only",
+        ),
+        (
+            "Note",
+            "This is a planning calculator, not financial advice.",
+            "",
+        ),
+    ]
+    _write_rows(sheet, rows)
+    sheet["B3"].number_format = "0.00%"
+    sheet["B6"].number_format = "£#,##0.00"
+    sheet["B7"].number_format = "0.00"
+
+
+def _write_trade_journal_sheet(workbook: Workbook) -> None:
+    """Create a blank trade journal worksheet."""
+    sheet = workbook.create_sheet("Trade Journal")
+    headers = [
+        "Date reviewed",
+        "Ticker",
+        "Company name",
+        "Market",
+        "Action grade",
+        "Decision",
+        "Entry planned",
+        "Stop planned",
+        "Risk %",
+        "Trade taken?",
+        "Entry date",
+        "Exit date",
+        "Exit reason",
+        "Result",
+        "Notes",
+    ]
+    rows = [
+        headers,
+        [
+            "Suggested Decision values:",
+            "",
+            "",
+            "",
+            "",
+            "Watch | Paper trade | Trade | Ignore",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ],
+    ]
+    _write_rows(sheet, rows)
 
 
 def _auto_size_columns(sheet) -> None:
@@ -561,6 +651,135 @@ def _fetch_dividend_risk_flags(
         """
     ).fetchall()
     return headers, rows
+
+
+def _fetch_trade_candidates(
+    connection: duckdb.DuckDBPyConnection,
+    report_date: date,
+    recent_days: int,
+    config_dir: Optional[Path],
+) -> Tuple[List[str], List[Sequence[Any]]]:
+    """Fetch all recent crossover candidates for decision review."""
+    headers = [
+        "Ticker",
+        "Company Name",
+        "Market",
+        "Direction",
+        "Action Grade",
+        "Score",
+        "Crossover Date",
+        "Days Since Crossover",
+        "Signal Description",
+        "Latest Close",
+        "50-day SMA Reference",
+        "20-day Low/High Reference",
+        "20% Trailing Reference",
+        "Dividend Risk Flag",
+        "Risk Notes",
+    ]
+    raw_rows = connection.execute(
+        """
+        SELECT
+            securities.ticker,
+            signals.signal_date,
+            signals.moving_average_period_days,
+            signals.comparison_period_days,
+            signals.signal_type
+        FROM moving_average_signals AS signals
+        INNER JOIN securities
+            ON signals.security_id = securities.security_id
+        WHERE signals.signal_type IN ('BULLISH_CROSSOVER', 'BEARISH_CROSSOVER')
+          AND signals.signal_date >= ?
+          AND signals.signal_date <= ?
+        ORDER BY signals.signal_date DESC, securities.ticker
+        """,
+        [report_date - timedelta(days=recent_days), report_date],
+    ).fetchall()
+    rows = []
+
+    for row in raw_rows:
+        signal = {
+            "direction": _friendly_direction(row[4]),
+            "trend_description": describe_crossover(row[2], row[3], row[4]),
+            "crossover_date": row[1],
+            "days_since_crossover": format_days_since_crossover(row[1], report_date),
+        }
+        candidate = build_trade_candidate(
+            connection,
+            row[0],
+            signal,
+            config_dir=config_dir,
+        )
+
+        if candidate is None:
+            continue
+
+        review_levels = candidate.get("review_levels", {})
+        rows.append(
+            (
+                candidate.get("ticker"),
+                candidate.get("company_name"),
+                candidate.get("market"),
+                candidate.get("signal_direction"),
+                candidate.get("action_grade"),
+                candidate.get("score"),
+                candidate.get("crossover_date"),
+                candidate.get("days_since_crossover"),
+                candidate.get("signal_description"),
+                candidate.get("latest_close_price"),
+                review_levels.get("50-day SMA"),
+                _twenty_day_reference(candidate),
+                review_levels.get("20% trailing reference"),
+                candidate.get("dividend_risk_flag") or "",
+                " | ".join(candidate.get("risk_notes", [])),
+            )
+        )
+
+    rows.sort(key=_trade_candidate_sort_key)
+    return headers, rows
+
+
+def _twenty_day_reference(candidate: Dict[str, Any]) -> Any:
+    """Return the candidate's directional 20-day high or low reference."""
+    review_levels = candidate.get("review_levels", {})
+
+    if candidate.get("signal_direction") == "Bullish":
+        return review_levels.get("20-day low")
+
+    if candidate.get("signal_direction") == "Bearish":
+        return review_levels.get("20-day high")
+
+    return review_levels.get("20-day extreme")
+
+
+def _trade_candidate_sort_key(row: Sequence[Any]) -> tuple:
+    """Sort Trade Candidates rows by workbook setup priority."""
+    grade = row[4]
+    crossover_date = row[6]
+
+    if hasattr(crossover_date, "toordinal"):
+        crossover_ordinal = crossover_date.toordinal()
+    else:
+        crossover_ordinal = 0
+
+    return (
+        _trade_candidate_grade_rank(grade),
+        -crossover_ordinal,
+        -(row[5] or 0),
+        row[0] or "",
+    )
+
+
+def _trade_candidate_grade_rank(grade: Any) -> int:
+    """Return workbook sort rank for action grades."""
+    ranks = {
+        "Strong Buy Setup": 0,
+        "Buy Setup": 1,
+        "Track Only": 2,
+        "Sell Setup": 3,
+        "Strong Sell Setup": 4,
+    }
+    return ranks.get(str(grade), 2)
 
 
 def _count_rows(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:

@@ -271,6 +271,21 @@ Excel reports are saved here:
 ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Excel
 ```
 
+The Excel workbook is the detailed decision workbook. It keeps the existing
+data tabs and also includes:
+
+- `Trade Candidates`: all recent crossover candidates, including every action
+  grade, sorted from strong buy setups through strong sell setups.
+- `Position Sizing`: a simple editable planning calculator with example values
+  for trading capital, risk per trade, entry price, and stop price. It uses
+  basic formulas for maximum risk, risk per unit/share/point, and suggested
+  position size.
+- `Trade Journal`: a blank table for recording review decisions, planned entry
+  and stop levels, whether a trade was taken, exit details, result, and notes.
+
+The position sizing sheet is a planning calculator, not financial advice. The
+example values are placeholders to edit before using the workbook for review.
+
 PDF reports are saved here:
 
 ```text
