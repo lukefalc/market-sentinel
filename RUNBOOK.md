@@ -224,6 +224,45 @@ PYTHONPATH=src python3 scripts/run_daily_process.py
 This only updates the S&P 500 CSV. It does not update FTSE 350, and it does not
 download prices by itself.
 
+## Where The Database Is Saved
+
+The DuckDB database location is controlled by `database_path` in
+`config/settings.yaml`.
+
+The recommended shared OneDrive location is:
+
+```yaml
+database_path: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Data/market_sentinel.duckdb
+```
+
+The `~` is expanded automatically to your Mac home folder. When the project
+opens the database, it creates the parent `Data` folder if it does not already
+exist.
+
+To use the same Market Sentinel database across Macs:
+
+1. Install and sign in to OneDrive on each Mac.
+2. Make sure this folder is available in OneDrive:
+
+```text
+~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Data
+```
+
+3. Clone the code from GitHub on each Mac.
+4. Keep `config/settings.yaml` pointing at the OneDrive `database_path`.
+5. Run the database initialisation or daily process from only one Mac at a time.
+
+DuckDB is a single-file database, so avoid running Market Sentinel against the
+same OneDrive database concurrently on multiple devices. Let OneDrive finish
+syncing before switching devices.
+
+If `database_path` is missing from `config/settings.yaml`, the project falls
+back to the local development database:
+
+```text
+data/market_sentinel.duckdb
+```
+
 ## Where Reports Are Saved
 
 Excel reports are saved here:

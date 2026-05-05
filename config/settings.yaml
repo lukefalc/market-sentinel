@@ -2,7 +2,7 @@
 
 environment: development
 log_level: INFO
-database_path: data/market_sentinel.duckdb
+database_path: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/Data/market_sentinel.duckdb
 report_output_dir: reports
 price_download_batch_size: 20
 price_backfill_period: 5y

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from market_sentinel.config.loader import CONFIG_FILES, load_all_configs
+from market_sentinel.config_loader import load_all_configs as load_all_configs_shim
 
 
 def write_config_files(config_dir: Path, content: str = "enabled: true\n") -> None:
@@ -33,6 +34,15 @@ def test_load_all_configs_successfully(tmp_path: Path) -> None:
     assert configs["moving_averages"] == {"enabled": True}
     assert configs["alert_rules"] == {"enabled": True}
     assert configs["watchlist"] == {"enabled": True}
+
+
+def test_config_loader_shim_loads_all_configs(tmp_path: Path) -> None:
+    """Legacy config_loader imports should use the shared config package."""
+    write_config_files(tmp_path)
+
+    configs = load_all_configs_shim(tmp_path)
+
+    assert configs["settings"] == {"enabled": True}
 
 
 def test_load_all_configs_raises_clear_error_for_missing_file(

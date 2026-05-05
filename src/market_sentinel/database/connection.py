@@ -12,6 +12,8 @@ import duckdb
 
 from market_sentinel.config.loader import default_config_dir, load_named_config
 
+DEFAULT_DATABASE_PATH = Path("data/market_sentinel.duckdb")
+
 
 def get_database_path(config_dir: Optional[Path] = None) -> Path:
     """Return the configured DuckDB database path.
@@ -20,8 +22,8 @@ def get_database_path(config_dir: Optional[Path] = None) -> Path:
         config_dir: Optional folder containing ``settings.yaml``. Tests can pass
             a temporary folder here.
 
-    Raises:
-        ValueError: If ``database_path`` is missing or empty.
+    If ``database_path`` is missing or empty, the project falls back to the
+    local development database at ``data/market_sentinel.duckdb``.
     """
     base_config_dir = (
         Path(config_dir) if config_dir is not None else default_config_dir()
@@ -30,10 +32,7 @@ def get_database_path(config_dir: Optional[Path] = None) -> Path:
     database_path = settings.get("database_path")
 
     if not database_path:
-        raise ValueError(
-            "The setting 'database_path' is missing from config/settings.yaml. "
-            "Add a value such as 'data/market_sentinel.duckdb'."
-        )
+        database_path = DEFAULT_DATABASE_PATH
 
     path = Path(str(database_path)).expanduser()
 
