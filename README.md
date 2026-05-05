@@ -99,14 +99,24 @@ disabled, it prints a friendly message and does not send anything.
 Stock universe files live in:
 
 - `config/universes/ftse_350.csv`
+- `config/universes/ftse_100.csv`
 - `config/universes/sp_500.csv`
 
-The S&P 500 CSV can be updated from Wikipedia. FTSE 350 is still manual for now.
+The FTSE 100 and S&P 500 CSVs can be updated from Wikipedia. FTSE 250 and the
+full FTSE 350 CSV are not downloaded yet.
 
-To refresh the S&P 500 universe:
+To refresh the FTSE 100 and S&P 500 universes:
 
 ```bash
+PYTHONPATH=src python3 scripts/update_ftse100_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
+```
+
+Then load the universe and run the daily process:
+
+```bash
+PYTHONPATH=src python3 scripts/load_universe.py
+PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
 Then load the universe into the local database:

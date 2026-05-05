@@ -19,6 +19,8 @@ from market_sentinel.data.price_loader import (  # noqa: E402
     DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
+    DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
+    update_incremental_daily_prices,
     update_recent_daily_prices,
 )
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
@@ -32,11 +34,11 @@ def main() -> None:
     try:
         connection = open_duckdb_connection()
         initialise_database_schema(connection)
-        batch_size, lookback_days, pause_seconds = load_market_data_settings()
-        summary = update_recent_daily_prices(
+        batch_size, lookback_days, pause_seconds, overlap_days = load_market_data_settings()
+        summary = update_incremental_daily_prices(
             connection,
             batch_size=batch_size,
-            lookback_days=lookback_days,
+            overlap_days=overlap_days,
             pause_seconds=pause_seconds,
         )
     except (RuntimeError, ValueError, FileNotFoundError) as error:
@@ -48,6 +50,8 @@ def main() -> None:
 
     print(f"Checked {summary['tickers_checked']} tickers")
     print(f"Wrote {summary['price_rows_written']} daily price rows")
+    print(f"Incremental tickers: {summary.get('incremental_tickers', 0)}")
+    print(f"Full-history tickers: {summary.get('full_tickers', 0)}")
 
     if summary["failed_tickers"]:
         print("Some tickers could not be updated:")
@@ -78,14 +82,20 @@ def load_market_data_settings():
                 DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
             )
         )
+        overlap_days = int(
+            settings.get(
+                "price_update_overlap_days",
+                DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
+            )
+        )
     except (TypeError, ValueError) as error:
         raise ValueError(
             "Market data settings must use numbers for "
             "price_download_batch_size, price_daily_lookback_days, and "
-            "price_download_pause_seconds."
+            "price_download_pause_seconds, and price_update_overlap_days."
         ) from error
 
-    return batch_size, lookback_days, pause_seconds
+    return batch_size, lookback_days, pause_seconds, overlap_days
 
 
 if __name__ == "__main__":

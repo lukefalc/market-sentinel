@@ -16,6 +16,8 @@ if str(SRC_DIR) not in sys.path:
 
 from market_sentinel.analytics.moving_averages import (  # noqa: E402
     DEFAULT_MOVING_AVERAGE_HISTORY_DAYS,
+    DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+    calculate_and_store_incremental_moving_averages,
     calculate_and_store_moving_averages,
 )
 from market_sentinel.config.loader import load_named_config  # noqa: E402
@@ -30,10 +32,10 @@ def main() -> None:
     try:
         connection = open_duckdb_connection()
         initialise_database_schema(connection)
-        history_days = load_moving_average_history_days()
-        summary = calculate_and_store_moving_averages(
+        recent_days = load_moving_average_incremental_recent_days()
+        summary = calculate_and_store_incremental_moving_averages(
             connection,
-            history_days=history_days,
+            recent_days=recent_days,
         )
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Moving average calculation failed: {error}", file=sys.stderr)
@@ -71,6 +73,26 @@ def load_moving_average_history_days() -> int:
         ) from error
 
     return history_days
+
+
+def load_moving_average_incremental_recent_days() -> int:
+    """Read incremental moving average window from config/settings.yaml."""
+    settings = load_named_config("settings")
+
+    try:
+        recent_days = int(
+            settings.get(
+                "moving_average_incremental_recent_days",
+                DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+            )
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "moving_average_incremental_recent_days must be a whole number in "
+            "config/settings.yaml."
+        ) from error
+
+    return recent_days
 
 
 if __name__ == "__main__":

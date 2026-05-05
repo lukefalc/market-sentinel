@@ -1,7 +1,7 @@
 """Helpers for updating stock universe CSV files from public sources.
 
-This module currently supports updating the S&P 500 universe from Wikipedia.
-It only updates the local CSV file; it does not load prices or run analytics.
+This module supports updating public stock universes from Wikipedia. It only
+updates local CSV files; it does not load prices or run analytics.
 """
 
 from pathlib import Path
@@ -14,6 +14,9 @@ from market_sentinel.data.universe_loader import REQUIRED_COLUMNS
 
 SP500_WIKIPEDIA_URL = (
     "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+)
+FTSE100_WIKIPEDIA_URL = (
+    "https://en.wikipedia.org/wiki/FTSE_100_Index"
 )
 WIKIPEDIA_REQUEST_TIMEOUT_SECONDS = 20
 WIKIPEDIA_USER_AGENT = (
@@ -61,7 +64,45 @@ def update_sp500_universe_csv(
     return csv_path
 
 
-def _download_page_html(source_url: str) -> str:
+def update_ftse100_universe_csv(
+    output_path: Optional[Path] = None,
+    source_url: str = FTSE100_WIKIPEDIA_URL,
+) -> Path:
+    """Download the FTSE 100 table from Wikipedia and save it as a CSV file."""
+    csv_path = (
+        Path(output_path)
+        if output_path is not None
+        else Path("config") / "universes" / "ftse_100.csv"
+    )
+
+    html_text = _download_page_html(source_url, "FTSE 100")
+
+    try:
+        tables = pd.read_html(html_text)
+    except (ImportError, ValueError, OSError) as error:
+        raise RuntimeError(
+            "Could not read the FTSE 100 table from the downloaded Wikipedia "
+            "page. Check that pandas HTML support is installed and that the "
+            "Wikipedia page layout has not changed. "
+            f"Underlying error: {type(error).__name__}: {error}"
+        ) from error
+
+    source_table = _find_ftse100_table(tables)
+    universe = _convert_ftse100_table(source_table)
+
+    try:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        universe.to_csv(csv_path, index=False)
+    except OSError as error:
+        raise RuntimeError(
+            "Could not save the FTSE 100 universe CSV file. Check that the "
+            f"folder is writable: {csv_path.parent}"
+        ) from error
+
+    return csv_path
+
+
+def _download_page_html(source_url: str, universe_name: str = "S&P 500") -> str:
     """Download a webpage using a browser-style User-Agent header."""
     try:
         response = requests.get(
@@ -71,14 +112,14 @@ def _download_page_html(source_url: str) -> str:
         )
     except requests.RequestException as error:
         raise RuntimeError(
-            "Could not download the S&P 500 table from Wikipedia. Check your "
+            f"Could not download the {universe_name} table from Wikipedia. Check your "
             "internet connection and try again. "
             f"Underlying error: {type(error).__name__}: {error}"
         ) from error
 
     if response.status_code < 200 or response.status_code >= 300:
         raise RuntimeError(
-            "Could not download the S&P 500 table from Wikipedia. Wikipedia "
+            f"Could not download the {universe_name} table from Wikipedia. Wikipedia "
             f"returned HTTP status {response.status_code}. Try again later."
         )
 
@@ -95,6 +136,21 @@ def _find_sp500_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
 
     raise RuntimeError(
         "Could not find the S&P 500 constituents table in the Wikipedia page. "
+        "The page layout may have changed."
+    )
+
+
+def _find_ftse100_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
+    """Find the Wikipedia table containing FTSE 100 constituents."""
+    for table in tables:
+        columns = set(table.columns)
+        has_company = "Company" in columns or "Constituent" in columns
+        has_ticker = "Ticker" in columns or "EPIC" in columns
+        if has_company and has_ticker:
+            return table
+
+    raise RuntimeError(
+        "Could not find the FTSE 100 constituents table in the Wikipedia page. "
         "The page layout may have changed."
     )
 
@@ -139,9 +195,93 @@ def _convert_sp500_table(table: pd.DataFrame) -> pd.DataFrame:
     return universe.sort_values("ticker").reset_index(drop=True)
 
 
+def _convert_ftse100_table(table: pd.DataFrame) -> pd.DataFrame:
+    """Convert the Wikipedia FTSE 100 table to the project CSV format."""
+    ticker_column = _first_present_column(table, ["Ticker", "EPIC"])
+    name_column = _first_present_column(table, ["Company", "Constituent"])
+    sector_column = _first_present_column(
+        table,
+        [
+            "FTSE Industry Classification Benchmark sector",
+            "ICB Sector",
+            "Sector",
+        ],
+        required=False,
+    )
+
+    if ticker_column is None or name_column is None:
+        raise RuntimeError(
+            "The FTSE 100 table is missing expected ticker or company columns. "
+            "Wikipedia may have changed."
+        )
+
+    if sector_column is None:
+        sectors = ""
+    else:
+        sectors = table[sector_column].astype(str).str.strip()
+
+    universe = pd.DataFrame(
+        {
+            "ticker": table[ticker_column].apply(_to_london_yfinance_ticker),
+            "name": table[name_column].astype(str).str.strip(),
+            "market": "FTSE 100",
+            "region": "UK",
+            "currency": "GBP",
+            "sector": sectors,
+        }
+    )
+
+    universe = universe[REQUIRED_COLUMNS]
+    universe = universe.dropna(subset=["ticker", "name"])
+    universe = universe[
+        (universe["ticker"].astype(str).str.strip() != "")
+        & (universe["name"].astype(str).str.strip() != "")
+    ]
+
+    if universe.empty:
+        raise RuntimeError(
+            "The FTSE 100 table was found, but no valid rows could be parsed."
+        )
+
+    return universe.sort_values("ticker").reset_index(drop=True)
+
+
+def _first_present_column(
+    table: pd.DataFrame,
+    names: List[str],
+    required: bool = True,
+) -> Optional[str]:
+    """Return the first matching column name from a DataFrame."""
+    for name in names:
+        if name in table.columns:
+            return name
+
+    if required:
+        raise RuntimeError(
+            "A required column was not found in the downloaded universe table."
+        )
+
+    return None
+
+
 def _to_yfinance_ticker(ticker: object) -> str:
     """Convert a Wikipedia ticker to the format expected by yfinance."""
     if pd.isna(ticker):
         return ""
 
     return str(ticker).strip().replace(".", "-")
+
+
+def _to_london_yfinance_ticker(ticker: object) -> str:
+    """Convert a London Stock Exchange ticker to yfinance format."""
+    if pd.isna(ticker):
+        return ""
+
+    value = str(ticker).strip().upper()
+    if not value:
+        return ""
+
+    if value.endswith(".L"):
+        return value
+
+    return f"{value.replace('.', '-')}.L"

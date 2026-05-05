@@ -76,6 +76,7 @@ def generate_charts(
         "chart_close_price_linewidth",
         DEFAULT_CLOSE_PRICE_LINEWIDTH,
     )
+    include_grades = _pdf_include_setup_grades(settings)
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -101,9 +102,24 @@ def generate_charts(
     generated_files: List[Path] = []
     chart_details: List[Dict[str, Any]] = []
     skipped: Dict[str, str] = {}
+    reused_files = 0
 
     for index, selection in enumerate(selected_signals, start=1):
         ticker = selection["ticker"]
+        trade_candidate = build_trade_candidate(
+            connection,
+            ticker,
+            (selection.get("signals") or [None])[0],
+            config_dir=config_dir,
+        )
+
+        if tickers is None and (
+            trade_candidate is None
+            or trade_candidate.get("action_grade") not in include_grades
+        ):
+            print(f"[{index}/{len(selected_tickers)}] Skipping {ticker}: not selected for PDF")
+            continue
+
         print(f"[{index}/{len(selected_tickers)}] Generating chart for {ticker}")
         try:
             chart_data = _fetch_chart_data(
@@ -126,40 +142,41 @@ def generate_charts(
             continue
 
         output_path = target_dir / f"{_safe_filename(ticker)}_price_trend.png"
-        _write_chart_image(
-            ticker,
-            chart_data,
-            output_path,
-            show_close_price,
-            sma_periods,
-            close_price_style,
-            close_price_color,
-            close_price_linewidth,
-        )
+        if _chart_is_current(output_path, chart_data):
+            reused_files += 1
+            print(f"Reusing existing chart: {output_path}")
+        else:
+            _write_chart_image(
+                ticker,
+                chart_data,
+                output_path,
+                show_close_price,
+                sma_periods,
+                close_price_style,
+                close_price_color,
+                close_price_linewidth,
+            )
+            print(f"Saved chart: {output_path}")
+
         generated_files.append(output_path)
         chart_details.append(
             {
                 **selection,
                 "chart_path": output_path,
-                "trade_candidate": build_trade_candidate(
-                    connection,
-                    ticker,
-                    (selection.get("signals") or [None])[0],
-                    config_dir=config_dir,
-                ),
+                "trade_candidate": trade_candidate,
             }
         )
-        print(f"Saved chart: {output_path}")
 
     print(
         "Chart generation complete: "
-        f"{len(generated_files)} created, {len(skipped)} skipped"
+        f"{len(generated_files)} available, {reused_files} reused, {len(skipped)} skipped"
     )
     chart_details = sorted(chart_details, key=_chart_detail_sort_key)
 
     return {
         "tickers_checked": len(selected_tickers),
         "charts_created": len(generated_files),
+        "charts_reused": reused_files,
         "chart_paths": [detail["chart_path"] for detail in chart_details],
         "chart_details": chart_details,
         "skipped": skipped,
@@ -196,6 +213,41 @@ def _grade_sort_rank(action_grade: Any) -> int:
         "Strong Sell Setup": 4,
     }
     return ranks.get(str(action_grade), 2)
+
+
+def _pdf_include_setup_grades(settings: Dict[str, Any]) -> List[str]:
+    """Read setup grades selected for PDF chart generation."""
+    raw_grades = settings.get(
+        "pdf_include_setup_grades",
+        ["Strong Buy Setup", "Strong Sell Setup"],
+    )
+
+    if isinstance(raw_grades, str):
+        raw_grades = [raw_grades]
+
+    if not isinstance(raw_grades, list):
+        return ["Strong Buy Setup", "Strong Sell Setup"]
+
+    grades = [str(grade) for grade in raw_grades if str(grade).strip()]
+    return grades or ["Strong Buy Setup", "Strong Sell Setup"]
+
+
+def _chart_is_current(output_path: Path, chart_data: Dict[str, Any]) -> bool:
+    """Return true when an existing chart is newer than latest chart price data."""
+    if not output_path.exists():
+        return False
+
+    prices = chart_data.get("prices") or []
+    if not prices:
+        return False
+
+    latest_price_date = prices[-1][0]
+    if isinstance(latest_price_date, datetime):
+        latest_datetime = latest_price_date
+    else:
+        latest_datetime = datetime.combine(latest_price_date, datetime.min.time())
+
+    return output_path.stat().st_mtime >= latest_datetime.timestamp()
 
 
 def _load_settings(config_dir: Optional[Path]) -> Dict[str, Any]:

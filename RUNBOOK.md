@@ -10,7 +10,7 @@ S&P 500 stocks.
 It currently can:
 
 - Load stock universe CSV files.
-- Update the S&P 500 universe CSV from Wikipedia.
+- Update the FTSE 100 and S&P 500 universe CSVs from Wikipedia.
 - Store data in a local DuckDB database.
 - Download daily price data with `yfinance`.
 - Calculate simple moving averages.
@@ -22,7 +22,7 @@ It currently can:
 
 It does not currently send iPhone notifications.
 
-It does not currently update the FTSE 350 universe from the internet.
+It does not currently update the full FTSE 350 universe from the internet.
 
 ## Open Terminal And Go To The Project Folder
 
@@ -78,28 +78,46 @@ pip install -e ".[dev]"
 
 Then try the test command again.
 
-## Run The Full Daily Process
+## Run The Fast Daily Process
 
-The current safe daily command is:
+The usual daily command is:
+
+```bash
+PYTHONPATH=src python3 scripts/run_daily_fast.py
+```
+
+This runs the fast daily steps in order:
+
+1. Load universe CSV files.
+2. Update market data incrementally.
+3. Calculate moving averages incrementally.
+4. Detect crossovers.
+5. Calculate dividend risk flags.
+6. Generate charts.
+7. Generate the PDF report.
+8. Generate the Excel report.
+
+The fast daily process skips dividend history downloads by default. This keeps
+the normal daily run focused on recent prices, moving averages, crossovers, and
+reports.
+
+If you want the older daily process that also sends the optional email, run:
 
 ```bash
 PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
-This runs the daily steps in order:
+## Run The Weekly Full Process
 
-1. Load universe CSV files.
-2. Update market data.
-3. Calculate moving averages.
-4. Detect crossovers.
-5. Calculate dividends.
-6. Calculate dividend risk flags.
-7. Generate the Excel report.
-8. Generate the PDF report.
-9. Send the optional daily alert email.
+Run the fuller weekly command when you want to include dividend updates:
 
-Email is safe by default. If email alerts are disabled, the project prints a
-friendly message and does not send anything.
+```bash
+PYTHONPATH=src python3 scripts/run_weekly_full.py
+```
+
+The weekly process includes the same reporting steps as the fast daily process,
+but also runs dividend calculations before risk flags and reports. Both new
+process scripts print timing logs around each step and a final timing summary.
 
 The PDF report is the main daily report to read. It is chart-led: each selected
 stock gets one landscape page with a trend chart and a short explanation of why
@@ -122,13 +140,16 @@ line plus the 7-day, 30-day, and 50-day moving averages over the last 180 days.
 The project limits chart generation to 50 tickers, prioritised by the most
 recent crossover date.
 
-Market data has two modes.
+Market data has three modes.
 
-Daily update mode is for normal daily runs. It downloads only recent prices:
+Incremental mode is for normal daily runs. For each ticker, it checks the latest
+stored price date and downloads from that date minus a small overlap buffer:
 
 ```bash
 PYTHONPATH=src python3 scripts/update_market_data.py
 ```
+
+Daily lookback mode is still available inside the older daily process.
 
 Backfill mode is for first-time setup or occasional historical refreshes. It
 downloads a larger historical period and can take much longer:
@@ -137,13 +158,14 @@ downloads a larger historical period and can take much longer:
 PYTHONPATH=src python3 scripts/backfill_market_data.py
 ```
 
-The full daily process uses daily update mode only. It does not run the slower
-backfill.
+The fast daily process uses incremental mode only. It does not run the slower
+backfill and does not update dividend history unless explicitly enabled.
 
 Both modes process tickers in yfinance batches. This is normal and helps the
 project handle large universes like the S&P 500 without looking stuck.
 
-By default, each batch has 20 tickers, daily mode downloads the last 10 days,
+By default, each batch has 20 tickers, incremental mode overlaps the latest
+stored price date by 5 days, daily lookback mode downloads the last 10 days,
 backfill mode downloads 5 years, and the project pauses 3 seconds between
 batches.
 
@@ -159,7 +181,9 @@ To change this, edit `config/settings.yaml`:
 price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
+price_update_overlap_days: 5
 price_download_pause_seconds: 3
+run_dividends_in_daily_fast: false
 ```
 
 During the update you should see:
@@ -197,15 +221,22 @@ The setting lives in `config/settings.yaml`:
 
 ```yaml
 moving_average_history_days: 260
+moving_average_incremental_recent_days: 10
 ```
 
-## Update The S&P 500 Universe
+The fast daily process uses `moving_average_incremental_recent_days` and stores
+only recent SMA rows while still loading enough price history to calculate the
+longest configured SMA.
 
-The S&P 500 universe can be refreshed from Wikipedia.
+## Update The FTSE 100 And S&P 500 Universes
 
-First update the S&P 500 CSV:
+The FTSE 100 and S&P 500 universe CSVs can be refreshed from Wikipedia. FTSE
+250 and the full FTSE 350 CSV are not downloaded yet.
+
+First update the FTSE 100 and S&P 500 CSVs:
 
 ```bash
+PYTHONPATH=src python3 scripts/update_ftse100_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
 ```
 
@@ -221,8 +252,8 @@ Then run the daily process:
 PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
-This only updates the S&P 500 CSV. It does not update FTSE 350, and it does not
-download prices by itself.
+This only updates the universe CSV files. It does not update the full FTSE 350
+CSV, and it does not download prices by itself.
 
 ## Where The Database Is Saved
 
@@ -497,10 +528,10 @@ Run tests:
 PYTHONPATH=src python3 -m pytest
 ```
 
-Run the full daily process:
+Run the fast daily process:
 
 ```bash
-PYTHONPATH=src python3 scripts/run_daily_process.py
+PYTHONPATH=src python3 scripts/run_daily_fast.py
 ```
 
 Generate chart images:
@@ -509,10 +540,11 @@ Generate chart images:
 PYTHONPATH=src python3 scripts/generate_charts.py
 ```
 
-Update S&P 500, load the universe, then run the daily process:
+Update FTSE 100 and S&P 500, load the universe, then run the daily process:
 
 ```bash
+PYTHONPATH=src python3 scripts/update_ftse100_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
 PYTHONPATH=src python3 scripts/load_universe.py
-PYTHONPATH=src python3 scripts/run_daily_process.py
+PYTHONPATH=src python3 scripts/run_daily_fast.py
 ```

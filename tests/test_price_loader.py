@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from market_sentinel.data.price_loader import (
     backfill_daily_prices,
     update_daily_prices,
+    update_incremental_daily_prices,
     update_recent_daily_prices,
 )
 from market_sentinel.database.connection import open_duckdb_connection
@@ -502,3 +503,102 @@ def test_update_daily_prices_writes_failed_ticker_log(
     assert rows[0]["reason"] == "network_error"
     assert "getaddrinfo failed" in rows[0]["details"]
     assert rows[0]["date"]
+
+
+def test_update_incremental_daily_prices_uses_latest_date_with_overlap(
+    tmp_path: Path,
+) -> None:
+    """Incremental mode should start from latest stored date minus overlap."""
+    connection = open_test_database(tmp_path)
+    calls = []
+
+    def incremental_downloader(ticker, start_date, end_date):
+        calls.append({"ticker": ticker, "start_date": start_date})
+        return [
+            {
+                "price_date": "2026-01-10",
+                "open_price": 20.0,
+                "high_price": 21.0,
+                "low_price": 19.0,
+                "close_price": 20.5,
+                "adjusted_close_price": 20.5,
+                "volume": 2000,
+            }
+        ]
+
+    try:
+        insert_security(connection, 1, "AAA")
+        update_daily_prices(connection, downloader=fake_downloader)
+        summary = update_incremental_daily_prices(
+            connection,
+            downloader=incremental_downloader,
+            overlap_days=5,
+            batch_size=1,
+            pause_seconds=0,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    assert calls == [{"ticker": "AAA", "start_date": "2025-12-29"}]
+    assert summary["incremental_tickers"] == 1
+    assert summary["full_tickers"] == 0
+    assert summary["price_rows_written"] == 1
+
+
+def test_update_incremental_daily_prices_uses_full_download_for_new_ticker(
+    tmp_path: Path,
+) -> None:
+    """Tickers with no history should use full-history mode."""
+    connection = open_test_database(tmp_path)
+    calls = []
+
+    def full_downloader(ticker, start_date, end_date):
+        calls.append({"ticker": ticker, "start_date": start_date})
+        return fake_downloader(ticker, start_date, end_date)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        summary = update_incremental_daily_prices(
+            connection,
+            downloader=full_downloader,
+            overlap_days=5,
+            batch_size=1,
+            pause_seconds=0,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+        saved_count = connection.execute(
+            "SELECT COUNT(*) FROM daily_prices"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert calls == [{"ticker": "AAA", "start_date": None}]
+    assert summary["full_tickers"] == 1
+    assert saved_count == 2
+
+
+def test_update_incremental_daily_prices_does_not_duplicate_overlap_rows(
+    tmp_path: Path,
+) -> None:
+    """Overlap downloads should upsert existing rows instead of duplicating."""
+    connection = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        update_daily_prices(connection, downloader=fake_downloader)
+        update_incremental_daily_prices(
+            connection,
+            downloader=fake_downloader,
+            overlap_days=5,
+            batch_size=1,
+            pause_seconds=0,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+        saved_count = connection.execute(
+            "SELECT COUNT(*) FROM daily_prices"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert saved_count == 2

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from market_sentinel.analytics.moving_averages import (
+    calculate_and_store_incremental_moving_averages,
     calculate_and_store_moving_averages,
     calculate_simple_moving_average,
 )
@@ -267,6 +268,71 @@ def test_calculate_and_store_moving_averages_prints_progress(
     assert "Processing ticker 2 of 2: BBB" in captured.out
     assert "Rows written for BBB: 0" in captured.out
     assert "Moving average calculation summary" in captured.out
+
+
+def test_calculate_and_store_incremental_moving_averages_only_recent_rows(
+    tmp_path: Path,
+) -> None:
+    """Incremental SMA mode should store only recent dates."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, 31)
+
+        summary = calculate_and_store_incremental_moving_averages(
+            connection,
+            config_dir,
+            recent_days=2,
+        )
+        saved_rows = connection.execute(
+            """
+            SELECT signal_date, moving_average_period_days, moving_average_value
+            FROM moving_average_signals
+            WHERE security_id = 1
+            ORDER BY signal_date, moving_average_period_days
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert summary["mode"] == "incremental"
+    assert summary["signals_written"] == 4
+    assert _normalise_rows(saved_rows) == [
+        ("2026-01-30", 7, 27.0),
+        ("2026-01-30", 30, 15.5),
+        ("2026-01-31", 7, 28.0),
+        ("2026-01-31", 30, 16.5),
+    ]
+
+
+def test_calculate_and_store_incremental_moving_averages_upserts_rows(
+    tmp_path: Path,
+) -> None:
+    """Incremental SMA mode should not duplicate existing recent rows."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, 31)
+
+        calculate_and_store_incremental_moving_averages(
+            connection,
+            config_dir,
+            recent_days=2,
+        )
+        calculate_and_store_incremental_moving_averages(
+            connection,
+            config_dir,
+            recent_days=2,
+        )
+        saved_count = connection.execute(
+            "SELECT COUNT(*) FROM moving_average_signals"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert saved_count == 4
 
 
 def _normalise_rows(rows):

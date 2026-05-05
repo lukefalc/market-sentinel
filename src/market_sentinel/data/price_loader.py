@@ -21,6 +21,7 @@ BatchDownloader = Callable[
 SleepFunction = Callable[[float], None]
 DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE = 20
 DEFAULT_PRICE_DAILY_LOOKBACK_DAYS = 10
+DEFAULT_PRICE_UPDATE_OVERLAP_DAYS = 5
 DEFAULT_PRICE_DOWNLOAD_LOOKBACK_DAYS = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS
 DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 3.0
 DEFAULT_PRICE_BACKFILL_PERIOD = "5y"
@@ -385,6 +386,97 @@ def update_recent_daily_prices(
     )
 
 
+def update_incremental_daily_prices(
+    connection: duckdb.DuckDBPyConnection,
+    batch_size: int = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
+    overlap_days: int = DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
+    backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
+    pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
+    downloader: Optional[Downloader] = None,
+    failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
+    sleep_function: SleepFunction = time.sleep,
+) -> Dict[str, Any]:
+    """Update each ticker from its latest stored price date with an overlap."""
+    if batch_size <= 0:
+        raise ValueError("Market data batch size must be greater than zero.")
+    if overlap_days < 0:
+        raise ValueError("price_update_overlap_days must be zero or greater.")
+    if pause_seconds < 0:
+        raise ValueError("Market data batch pause must be zero or greater.")
+
+    securities = get_active_securities(connection)
+    summary = {
+        "tickers_checked": len(securities),
+        "price_rows_written": 0,
+        "incremental_tickers": 0,
+        "full_tickers": 0,
+        "failed_tickers": {},
+    }
+    print(f"Total tickers to update incrementally: {len(securities)}")
+
+    for batch_number, batch in enumerate(_chunk_securities(securities, batch_size), 1):
+        print(f"Starting incremental batch {batch_number}")
+        for security in batch:
+            ticker = security["ticker"]
+            latest_price_date = _latest_price_date(connection, security["security_id"])
+
+            if latest_price_date is None:
+                start_date = None
+                period = backfill_period
+                summary["full_tickers"] += 1
+                print(f"{ticker}: full download because no price history exists")
+            else:
+                start_date = (latest_price_date - timedelta(days=overlap_days)).isoformat()
+                period = None
+                summary["incremental_tickers"] += 1
+                print(f"{ticker}: incremental download from {start_date}")
+
+            try:
+                if downloader is not None:
+                    price_rows = download_daily_prices(
+                        ticker,
+                        start_date=start_date,
+                        end_date=None,
+                        downloader=downloader,
+                    )
+                else:
+                    price_rows = download_daily_prices_for_batch(
+                        [ticker],
+                        start_date=start_date,
+                        end_date=None,
+                        period=period,
+                    ).get(ticker, [])
+
+                if not price_rows:
+                    summary["failed_tickers"][ticker] = {
+                        "reason": "no_price_rows",
+                        "details": "No price rows were returned for this ticker.",
+                    }
+                    continue
+
+                summary["price_rows_written"] += upsert_daily_prices(
+                    connection,
+                    security["security_id"],
+                    price_rows,
+                )
+            except RuntimeError as error:
+                summary["failed_tickers"][ticker] = _failure_details(error)
+
+        if batch_number < len(_chunk_securities(securities, batch_size)) and pause_seconds > 0:
+            print(f"Pausing {pause_seconds:g} seconds before the next batch")
+            sleep_function(pause_seconds)
+
+    if summary["failed_tickers"]:
+        write_failed_price_updates(summary["failed_tickers"], failed_log_path)
+
+    print("Incremental market data update summary")
+    print(f"Total tickers checked: {summary['tickers_checked']}")
+    print(f"Incremental tickers: {summary['incremental_tickers']}")
+    print(f"Full-history tickers: {summary['full_tickers']}")
+    print(f"Total price rows written: {summary['price_rows_written']}")
+    return summary
+
+
 def backfill_daily_prices(
     connection: duckdb.DuckDBPyConnection,
     batch_size: int = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
@@ -578,6 +670,32 @@ def _resolve_download_period(mode: str, backfill_period: str) -> Optional[str]:
         return backfill_period
 
     raise ValueError("Price download mode must be either daily or backfill.")
+
+
+def _latest_price_date(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+) -> Optional[date]:
+    """Return the latest stored daily price date for one security."""
+    value = connection.execute(
+        """
+        SELECT MAX(price_date)
+        FROM daily_prices
+        WHERE security_id = ?
+        """,
+        [security_id],
+    ).fetchone()[0]
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    return date.fromisoformat(str(value)[:10])
 
 
 def _chunk_securities(

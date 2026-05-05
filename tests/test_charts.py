@@ -35,6 +35,12 @@ def write_chart_config(
                 "  - 7",
                 "  - 30",
                 "  - 50",
+                "pdf_include_setup_grades:",
+                "  - Strong Buy Setup",
+                "  - Buy Setup",
+                "  - Track Only",
+                "  - Sell Setup",
+                "  - Strong Sell Setup",
             ]
         )
 
@@ -441,6 +447,38 @@ def test_generate_charts_limits_selected_tickers_to_fifty(
 
     assert summary["tickers_checked"] == 50
     assert summary["charts_created"] == 50
+
+
+def test_generate_charts_filters_to_pdf_setup_grades_by_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Chart generation should skip candidates not selected for the PDF."""
+    config_dir = tmp_path / "config"
+    database_path = tmp_path / "data" / "market_sentinel.duckdb"
+    chart_dir = tmp_path / "charts"
+    write_chart_config(
+        config_dir,
+        database_path,
+        chart_dir,
+        include_chart_defaults=False,
+    )
+    connection = open_duckdb_connection(config_dir)
+    initialise_database_schema(connection)
+    monkeypatch.setattr(charts_module, "_write_chart_image", fake_chart_writer)
+
+    try:
+        insert_chart_selection_data(connection)
+        summary = generate_charts(connection, config_dir=config_dir)
+    finally:
+        connection.close()
+
+    assert summary["charts_created"] == 1
+    assert summary["chart_details"][0]["ticker"] == "BBB"
+    assert summary["chart_details"][0]["trade_candidate"]["action_grade"] in {
+        "Strong Buy Setup",
+        "Strong Sell Setup",
+    }
 
 
 def test_generate_charts_uses_simple_defaults(

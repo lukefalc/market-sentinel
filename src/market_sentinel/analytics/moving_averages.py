@@ -5,6 +5,7 @@ moving averages for configured periods, and stores those values in the
 ``moving_average_signals`` table. Crossover detection uses these dated rows.
 """
 
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -15,6 +16,7 @@ from market_sentinel.data.price_loader import get_active_securities
 
 DEFAULT_PERIODS = [7, 30, 50, 100, 200]
 DEFAULT_MOVING_AVERAGE_HISTORY_DAYS = 260
+DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS = 10
 
 
 def load_moving_average_periods(config_dir: Optional[Path] = None) -> List[int]:
@@ -250,6 +252,77 @@ def calculate_and_store_moving_averages(
     return summary
 
 
+def calculate_and_store_incremental_moving_averages(
+    connection: duckdb.DuckDBPyConnection,
+    config_dir: Optional[Path] = None,
+    recent_days: int = DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+) -> Dict[str, Any]:
+    """Calculate and store only recent SMA rows using enough price history."""
+    if recent_days <= 0:
+        raise ValueError(
+            "moving_average_incremental_recent_days must be greater than zero."
+        )
+
+    periods = load_moving_average_periods(config_dir)
+    longest_period = max(periods)
+    history_days = longest_period + recent_days
+    securities = get_active_securities(connection)
+    summary = {
+        "tickers_checked": len(securities),
+        "signals_written": 0,
+        "skipped_tickers": {},
+        "mode": "incremental",
+    }
+
+    print(f"Total tickers for incremental moving averages: {len(securities)}")
+
+    for ticker_number, security in enumerate(securities, start=1):
+        ticker = security["ticker"]
+        print(
+            f"Processing ticker {ticker_number} of {len(securities)}: {ticker}"
+        )
+        price_rows = get_closing_prices(connection, security["security_id"])
+        moving_average_rows = calculate_historical_moving_averages(
+            price_rows,
+            periods,
+            history_days=history_days,
+        )
+        latest_price_date = price_rows[-1]["price_date"] if price_rows else None
+        cutoff_date = _date_from_value(latest_price_date, recent_days)
+        recent_rows = [
+            row
+            for row in moving_average_rows
+            if cutoff_date is None or row["signal_date"] >= cutoff_date
+        ]
+
+        if not recent_rows:
+            summary["skipped_tickers"][ticker] = (
+                "Not enough daily price history for the configured moving "
+                "average periods."
+            )
+            print(f"Rows written for {ticker}: 0")
+            continue
+
+        rows_written_for_ticker = 0
+        for row in recent_rows:
+            upsert_moving_average_signal(
+                connection,
+                security["security_id"],
+                row["signal_date"],
+                row["period"],
+                row["average"],
+            )
+            summary["signals_written"] += 1
+            rows_written_for_ticker += 1
+
+        print(f"Rows written for {ticker}: {rows_written_for_ticker}")
+
+    print("Incremental moving average calculation summary")
+    print(f"Total tickers checked: {summary['tickers_checked']}")
+    print(f"Total moving average rows written: {summary['signals_written']}")
+    return summary
+
+
 def _first_stored_price_index(
     price_rows: List[Dict[str, Any]],
     history_days: int,
@@ -259,6 +332,20 @@ def _first_stored_price_index(
         return 0
 
     return max(0, len(price_rows) - history_days)
+
+
+def _date_from_value(value: Any, days_back: int) -> Optional[Any]:
+    """Return a date cutoff from a date-like value."""
+    if value is None:
+        return None
+
+    if hasattr(value, "date") and not isinstance(value, date):
+        value = value.date()
+
+    if isinstance(value, date):
+        return value - timedelta(days=days_back - 1)
+
+    return date.fromisoformat(str(value)[:10]) - timedelta(days=days_back - 1)
 
 
 def _get_table_columns(

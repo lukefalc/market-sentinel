@@ -1,6 +1,6 @@
 """Tests for the daily process runner."""
 
-from scripts import run_daily_process
+from scripts import run_daily_fast, run_daily_process, run_weekly_full
 from scripts.run_daily_process import daily_steps
 
 
@@ -128,4 +128,59 @@ def test_daily_process_uses_daily_market_data_mode(monkeypatch) -> None:
             "lookback_days": 3,
             "pause_seconds": 0.0,
         }
+    ]
+
+
+def test_run_daily_fast_skips_dividends_by_default(monkeypatch) -> None:
+    """The fast daily process should not include dividends by default."""
+
+    def fake_load_named_config(name):
+        return {"run_dividends_in_daily_fast": False}
+
+    monkeypatch.setattr(run_daily_fast, "load_named_config", fake_load_named_config)
+
+    step_names = [step_name for step_name, _step_function in run_daily_fast.daily_fast_steps()]
+
+    assert "Calculate dividends" not in step_names
+    assert step_names == [
+        "Load universe",
+        "Update market data incrementally",
+        "Calculate moving averages incrementally",
+        "Detect crossovers",
+        "Calculate risk flags",
+        "Generate charts",
+        "Generate PDF report",
+        "Generate Excel report",
+    ]
+
+
+def test_run_daily_fast_can_include_dividends_when_enabled(monkeypatch) -> None:
+    """The fast daily process can opt into dividends via settings."""
+
+    def fake_load_named_config(name):
+        return {"run_dividends_in_daily_fast": True}
+
+    monkeypatch.setattr(run_daily_fast, "load_named_config", fake_load_named_config)
+
+    step_names = [step_name for step_name, _step_function in run_daily_fast.daily_fast_steps()]
+
+    assert "Calculate dividends" in step_names
+
+
+def test_run_weekly_full_includes_dividend_update() -> None:
+    """The weekly full process should include dividend calculation."""
+    step_names = [
+        step_name for step_name, _step_function in run_weekly_full.weekly_full_steps()
+    ]
+
+    assert step_names == [
+        "Load universe",
+        "Update market data",
+        "Calculate moving averages",
+        "Detect crossovers",
+        "Calculate dividends",
+        "Calculate risk flags",
+        "Generate charts",
+        "Generate PDF report",
+        "Generate Excel report",
     ]
