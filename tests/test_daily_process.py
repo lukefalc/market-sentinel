@@ -6,19 +6,78 @@ from scripts.run_daily_process import daily_steps
 
 def test_daily_steps_are_in_expected_order() -> None:
     """The daily process should run project steps in the expected order."""
-    step_names = [step_name for step_name, _step_function in daily_steps()]
+    step_names = [
+        step_name
+        for step_name, _step_function in daily_steps(include_dividends=False)
+    ]
 
     assert step_names == [
         "Load universe",
         "Update market data",
         "Calculate moving averages",
         "Detect crossovers",
-        "Calculate dividends",
+        "Calculate dividends: skipped",
         "Calculate risk flags",
-        "Generate Excel report",
-        "Generate PDF report",
+        "Generate charts",
+        "Generate PDF",
+        "Generate Excel",
         "Send daily alert email",
     ]
+
+
+def test_daily_process_skips_dividends_by_default(monkeypatch, capsys) -> None:
+    """The normal daily process should skip dividends unless opted in."""
+
+    def fake_load_named_config(name):
+        return {"run_dividends_in_daily_process": False}
+
+    monkeypatch.setattr(run_daily_process, "load_named_config", fake_load_named_config)
+
+    step_names = [step_name for step_name, _step_function in daily_steps()]
+    result = run_daily_process._skip_dividend_refresh("fake connection")
+
+    captured = capsys.readouterr()
+    assert "Calculate dividends: skipped" in step_names
+    assert "Calculate dividends" not in [
+        name for name in step_names if name != "Calculate dividends: skipped"
+    ]
+    assert result == {"dividend_refresh": "skipped"}
+    assert (
+        "Skipping dividend refresh in daily process. Run weekly full process "
+        "to refresh dividends."
+    ) in captured.out
+
+
+def test_daily_process_includes_dividends_when_setting_enabled(monkeypatch) -> None:
+    """The normal daily process can opt into dividends via settings."""
+
+    def fake_load_named_config(name):
+        return {"run_dividends_in_daily_process": True}
+
+    monkeypatch.setattr(run_daily_process, "load_named_config", fake_load_named_config)
+
+    step_names = [step_name for step_name, _step_function in daily_steps()]
+
+    assert "Calculate dividends" in step_names
+    assert "Calculate dividends: skipped" not in step_names
+
+
+def test_daily_process_include_dividends_override() -> None:
+    """The command-line override should force the dividend step on."""
+    step_names = [
+        step_name
+        for step_name, _step_function in daily_steps(include_dividends=True)
+    ]
+
+    assert "Calculate dividends" in step_names
+    assert "Calculate dividends: skipped" not in step_names
+
+
+def test_daily_process_parses_include_dividends_flag() -> None:
+    """The command-line flag should be available for one-off dividend refreshes."""
+    args = run_daily_process.parse_args(["--include-dividends"])
+
+    assert args.include_dividends is True
 
 
 def test_email_step_uses_existing_email_sender(monkeypatch) -> None:
@@ -84,29 +143,35 @@ def test_email_step_handles_missing_settings_safely(monkeypatch, capsys) -> None
     assert "email settings are incomplete" in captured.out
 
 
-def test_daily_process_uses_daily_market_data_mode(monkeypatch) -> None:
-    """The daily process should use recent daily updates, not backfill mode."""
+def test_daily_process_uses_incremental_market_data_mode(monkeypatch) -> None:
+    """The daily process should use incremental updates with current skips."""
     calls = []
 
     def fake_load_named_config(name):
         return {
             "price_download_batch_size": 12,
-            "price_daily_lookback_days": 3,
+            "price_update_overlap_days": 4,
+            "skip_price_update_if_latest_date_is_today": True,
+            "price_update_stale_after_days": 2,
             "price_download_pause_seconds": 0,
         }
 
-    def fake_update_recent_daily_prices(
+    def fake_update_incremental_daily_prices(
         connection,
         batch_size,
-        lookback_days,
+        overlap_days,
         pause_seconds,
+        skip_if_latest_date_is_today,
+        stale_after_days,
     ):
         calls.append(
             {
                 "connection": connection,
                 "batch_size": batch_size,
-                "lookback_days": lookback_days,
+                "overlap_days": overlap_days,
                 "pause_seconds": pause_seconds,
+                "skip_if_latest_date_is_today": skip_if_latest_date_is_today,
+                "stale_after_days": stale_after_days,
             }
         )
         return {"tickers_checked": 0}
@@ -114,8 +179,8 @@ def test_daily_process_uses_daily_market_data_mode(monkeypatch) -> None:
     monkeypatch.setattr(run_daily_process, "load_named_config", fake_load_named_config)
     monkeypatch.setattr(
         run_daily_process,
-        "update_recent_daily_prices",
-        fake_update_recent_daily_prices,
+        "update_incremental_daily_prices",
+        fake_update_incremental_daily_prices,
     )
 
     result = run_daily_process._update_market_data_daily("fake connection")
@@ -125,8 +190,53 @@ def test_daily_process_uses_daily_market_data_mode(monkeypatch) -> None:
         {
             "connection": "fake connection",
             "batch_size": 12,
-            "lookback_days": 3,
+            "overlap_days": 4,
             "pause_seconds": 0.0,
+            "skip_if_latest_date_is_today": True,
+            "stale_after_days": 2,
+        }
+    ]
+
+
+def test_daily_process_uses_incremental_moving_average_mode(monkeypatch) -> None:
+    """The daily process should use the incremental SMA calculation."""
+    calls = []
+
+    def fake_load_named_config(name):
+        return {
+            "moving_average_incremental_recent_days": 4,
+            "moving_average_price_history_buffer_days": 33,
+        }
+
+    def fake_calculate_incremental(
+        connection,
+        recent_days,
+        price_history_buffer_days,
+    ):
+        calls.append(
+            {
+                "connection": connection,
+                "recent_days": recent_days,
+                "price_history_buffer_days": price_history_buffer_days,
+            }
+        )
+        return {"signals_written": 2}
+
+    monkeypatch.setattr(run_daily_process, "load_named_config", fake_load_named_config)
+    monkeypatch.setattr(
+        run_daily_process,
+        "calculate_and_store_incremental_moving_averages",
+        fake_calculate_incremental,
+    )
+
+    result = run_daily_process._calculate_moving_averages_daily("fake connection")
+
+    assert result == {"signals_written": 2}
+    assert calls == [
+        {
+            "connection": "fake connection",
+            "recent_days": 4,
+            "price_history_buffer_days": 33,
         }
     ]
 
@@ -183,4 +293,5 @@ def test_run_weekly_full_includes_dividend_update() -> None:
         "Generate charts",
         "Generate PDF report",
         "Generate Excel report",
+        "Send daily alert email",
     ]

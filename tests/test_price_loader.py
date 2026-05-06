@@ -1,6 +1,7 @@
 """Tests for daily price loading."""
 
 import csv
+from datetime import date
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -535,6 +536,7 @@ def test_update_incremental_daily_prices_uses_latest_date_with_overlap(
             overlap_days=5,
             batch_size=1,
             pause_seconds=0,
+            stale_after_days=0,
             failed_log_path=tmp_path / "failed_price_updates.csv",
         )
     finally:
@@ -544,6 +546,103 @@ def test_update_incremental_daily_prices_uses_latest_date_with_overlap(
     assert summary["incremental_tickers"] == 1
     assert summary["full_tickers"] == 0
     assert summary["price_rows_written"] == 1
+
+
+def test_update_incremental_daily_prices_skips_current_tickers(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Tickers with current stored prices should avoid a network call."""
+    connection = open_test_database(tmp_path)
+    calls = []
+
+    def should_not_download(ticker, start_date, end_date):
+        calls.append(ticker)
+        return fake_downloader(ticker, start_date, end_date)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        update_daily_prices(connection, downloader=fake_downloader)
+        summary = update_incremental_daily_prices(
+            connection,
+            downloader=should_not_download,
+            overlap_days=5,
+            batch_size=1,
+            pause_seconds=0,
+            today=date(2026, 1, 3),
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+
+    assert calls == []
+    assert summary["current_tickers"] == 1
+    assert summary["incremental_tickers"] == 0
+    assert summary["full_tickers"] == 0
+    assert summary["price_rows_written"] == 0
+    assert "Tickers skipped as current: 1" in captured.out
+
+
+def test_update_incremental_daily_prices_batches_stale_tickers(
+    tmp_path: Path,
+) -> None:
+    """Stale tickers sharing a start date should use one batch download."""
+    connection = open_test_database(tmp_path)
+    calls = []
+
+    def batch_downloader(tickers, start_date, end_date, period):
+        calls.append(
+            {
+                "tickers": list(tickers),
+                "start_date": start_date,
+                "period": period,
+            }
+        )
+        return {
+            ticker: [
+                {
+                    "price_date": "2026-01-10",
+                    "open_price": 20.0,
+                    "high_price": 21.0,
+                    "low_price": 19.0,
+                    "close_price": 20.5,
+                    "adjusted_close_price": 20.5,
+                    "volume": 2000,
+                }
+            ]
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "BBB")
+        update_daily_prices(connection, downloader=fake_downloader)
+        summary = update_incremental_daily_prices(
+            connection,
+            batch_downloader=batch_downloader,
+            overlap_days=5,
+            batch_size=10,
+            pause_seconds=0,
+            today=date(2026, 1, 10),
+            stale_after_days=3,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+        )
+    finally:
+        connection.close()
+
+    assert calls == [
+        {
+            "tickers": ["AAA", "BBB"],
+            "start_date": "2025-12-29",
+            "period": None,
+        }
+    ]
+    assert summary["current_tickers"] == 0
+    assert summary["incremental_tickers"] == 2
+    assert summary["full_tickers"] == 0
+    assert summary["price_rows_written"] == 2
 
 
 def test_update_incremental_daily_prices_uses_full_download_for_new_ticker(
@@ -565,6 +664,7 @@ def test_update_incremental_daily_prices_uses_full_download_for_new_ticker(
             overlap_days=5,
             batch_size=1,
             pause_seconds=0,
+            today=date(2026, 1, 10),
             failed_log_path=tmp_path / "failed_price_updates.csv",
         )
         saved_count = connection.execute(
@@ -574,6 +674,7 @@ def test_update_incremental_daily_prices_uses_full_download_for_new_ticker(
         connection.close()
 
     assert calls == [{"ticker": "AAA", "start_date": None}]
+    assert summary["current_tickers"] == 0
     assert summary["full_tickers"] == 1
     assert saved_count == 2
 

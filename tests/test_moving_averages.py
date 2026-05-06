@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from scripts import backfill_moving_averages
 from market_sentinel.analytics.moving_averages import (
     calculate_and_store_incremental_moving_averages,
     calculate_and_store_moving_averages,
@@ -88,6 +89,28 @@ def insert_daily_prices(connection, security_id: int, count: int) -> None:
                 float(day_number),
             ],
         )
+
+
+def insert_daily_price(
+    connection,
+    security_id: int,
+    price_id: int,
+    price_date: str,
+    close_price: float,
+) -> None:
+    """Insert one fake daily price."""
+    connection.execute(
+        """
+        INSERT INTO daily_prices (
+            price_id,
+            security_id,
+            price_date,
+            close_price
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        [price_id, security_id, price_date, close_price],
+    )
 
 
 def test_calculate_simple_moving_average() -> None:
@@ -297,6 +320,8 @@ def test_calculate_and_store_incremental_moving_averages_only_recent_rows(
         connection.close()
 
     assert summary["mode"] == "incremental"
+    assert summary["limited_backfill_tickers"] == 1
+    assert summary["incremental_tickers"] == 0
     assert summary["signals_written"] == 4
     assert _normalise_rows(saved_rows) == [
         ("2026-01-30", 7, 27.0),
@@ -333,6 +358,59 @@ def test_calculate_and_store_incremental_moving_averages_upserts_rows(
         connection.close()
 
     assert saved_count == 4
+
+
+def test_incremental_moving_averages_calculates_recent_and_missing_rows(
+    tmp_path: Path,
+) -> None:
+    """Incremental mode should update recent rows and add newly missing dates."""
+    connection, config_dir = open_test_database(tmp_path)
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_daily_prices(connection, 1, 31)
+        calculate_and_store_moving_averages(connection, config_dir)
+        insert_daily_price(connection, 1, 2000, "2026-02-01", 32.0)
+
+        summary = calculate_and_store_incremental_moving_averages(
+            connection,
+            config_dir,
+            recent_days=2,
+            price_history_buffer_days=5,
+        )
+        saved_count = connection.execute(
+            "SELECT COUNT(*) FROM moving_average_signals"
+        ).fetchone()[0]
+        latest_dates = connection.execute(
+            """
+            SELECT signal_date
+            FROM moving_average_signals
+            WHERE security_id = 1
+              AND signal_type = 'SMA'
+              AND moving_average_period_days IN (7, 30)
+            GROUP BY signal_date
+            HAVING COUNT(DISTINCT moving_average_period_days) = 2
+            ORDER BY signal_date DESC
+            LIMIT 2
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert summary["incremental_tickers"] == 1
+    assert summary["limited_backfill_tickers"] == 0
+    assert summary["signals_written"] == 4
+    assert saved_count == 29
+    assert _normalise_rows(latest_dates) == [
+        ("2026-02-01",),
+        ("2026-01-31",),
+    ]
+
+
+def test_full_moving_average_backfill_script_exists() -> None:
+    """A separate full/backfill moving-average script should remain available."""
+    assert hasattr(backfill_moving_averages, "main")
+    assert hasattr(backfill_moving_averages, "load_moving_average_history_days")
 
 
 def _normalise_rows(rows):

@@ -23,6 +23,7 @@ from market_sentinel.analytics.dividends import (  # noqa: E402
 from market_sentinel.config.loader import load_named_config  # noqa: E402
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
+from market_sentinel.utils.timing import timed_step  # noqa: E402
 
 
 def main() -> None:
@@ -30,15 +31,16 @@ def main() -> None:
     connection = None
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
-        batch_size, pause_seconds, retry_batch_size = load_dividend_settings()
-        summary = calculate_and_store_dividends(
-            connection,
-            batch_size=batch_size,
-            pause_seconds=pause_seconds,
-            retry_batch_size=retry_batch_size,
-        )
+        with timed_step("Calculate dividends"):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
+            batch_size, pause_seconds, retry_batch_size = load_dividend_settings()
+            summary = calculate_and_store_dividends(
+                connection,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                retry_batch_size=retry_batch_size,
+            )
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Dividend calculation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

@@ -19,6 +19,7 @@ from market_sentinel.analytics.risk_flags import (  # noqa: E402
 )
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
+from market_sentinel.utils.timing import timed_step  # noqa: E402
 
 
 def main() -> None:
@@ -26,9 +27,10 @@ def main() -> None:
     connection = None
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
-        summary = calculate_and_store_risk_flags(connection)
+        with timed_step("Calculate risk flags"):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
+            summary = calculate_and_store_risk_flags(connection)
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Dividend risk flag calculation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

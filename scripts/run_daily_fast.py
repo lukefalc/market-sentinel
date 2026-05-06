@@ -6,7 +6,6 @@ Run this script from the project root with:
 """
 
 import sys
-import time
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -22,6 +21,7 @@ from market_sentinel.analytics.crossovers import detect_and_store_crossovers  # 
 from market_sentinel.analytics.dividends import calculate_and_store_dividends  # noqa: E402
 from market_sentinel.analytics.moving_averages import (  # noqa: E402
     DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+    DEFAULT_MOVING_AVERAGE_PRICE_HISTORY_BUFFER_DAYS,
     calculate_and_store_incremental_moving_averages,
 )
 from market_sentinel.analytics.risk_flags import calculate_and_store_risk_flags  # noqa: E402
@@ -30,6 +30,8 @@ from market_sentinel.data.price_loader import (  # noqa: E402
     DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
+    DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS,
+    DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY,
     update_incremental_daily_prices,
 )
 from market_sentinel.data.universe_loader import default_universe_files, load_universe_files  # noqa: E402
@@ -38,6 +40,7 @@ from market_sentinel.database.schema import initialise_database_schema  # noqa: 
 from market_sentinel.reports.charts import generate_charts  # noqa: E402
 from market_sentinel.reports.excel_report import generate_excel_report  # noqa: E402
 from market_sentinel.reports.pdf_report import generate_pdf_report  # noqa: E402
+from market_sentinel.utils.timing import print_timing_summary, timed_step  # noqa: E402
 
 Step = Tuple[str, Callable]
 
@@ -50,17 +53,14 @@ def main() -> None:
     timings = []
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
+        with timed_step("Open database", timings):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
 
         for step_name, step_function in daily_fast_steps():
-            start_time = time.perf_counter()
-            print(f"Starting: {step_name}")
-            result = step_function(connection)
-            elapsed = time.perf_counter() - start_time
-            timings.append((step_name, elapsed))
+            with timed_step(step_name, timings):
+                result = step_function(connection)
             _print_step_result(step_name, result)
-            print(f"Finished: {step_name} in {elapsed:.1f}s")
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Fast daily process failed during: {step_name}", file=sys.stderr)
         print(f"Reason: {error}", file=sys.stderr)
@@ -69,7 +69,7 @@ def main() -> None:
         if connection is not None:
             connection.close()
 
-    _print_timing_summary(timings)
+    print_timing_summary(timings)
     print("Fast daily process completed successfully.")
 
 
@@ -105,6 +105,18 @@ def _update_market_data_incremental(connection):
         batch_size=int(settings.get("price_download_batch_size", DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE)),
         overlap_days=int(settings.get("price_update_overlap_days", DEFAULT_PRICE_UPDATE_OVERLAP_DAYS)),
         pause_seconds=float(settings.get("price_download_pause_seconds", DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS)),
+        skip_if_latest_date_is_today=_coerce_bool(
+            settings.get(
+                "skip_price_update_if_latest_date_is_today",
+                DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY,
+            )
+        ),
+        stale_after_days=int(
+            settings.get(
+                "price_update_stale_after_days",
+                DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS,
+            )
+        ),
     )
 
 
@@ -117,6 +129,12 @@ def _calculate_moving_averages_incremental(connection):
             settings.get(
                 "moving_average_incremental_recent_days",
                 DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+            )
+        ),
+        price_history_buffer_days=int(
+            settings.get(
+                "moving_average_price_history_buffer_days",
+                DEFAULT_MOVING_AVERAGE_PRICE_HISTORY_BUFFER_DAYS,
             )
         ),
     )
@@ -136,6 +154,17 @@ def _run_dividends_in_daily_fast() -> bool:
     return False
 
 
+def _coerce_bool(value) -> bool:
+    """Convert YAML-style truthy values into a bool."""
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    return bool(value)
+
+
 def _print_step_result(step_name: str, result) -> None:
     """Print a short result summary for one step."""
     if result is None:
@@ -148,13 +177,6 @@ def _print_step_result(step_name: str, result) -> None:
             print(f"{key}: {value}")
         return
     print(f"{step_name} result: {result}")
-
-
-def _print_timing_summary(timings) -> None:
-    """Print final timing summary."""
-    print("Fast daily timing summary")
-    for step_name, elapsed in timings:
-        print(f"- {step_name}: {elapsed:.1f}s")
 
 
 if __name__ == "__main__":

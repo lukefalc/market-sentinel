@@ -22,6 +22,7 @@ from market_sentinel.reports.excel_report import (  # noqa: E402
     EXPECTED_WORKSHEET_TITLES,
     generate_excel_report,
 )
+from market_sentinel.utils.timing import timed_step  # noqa: E402
 
 
 def main() -> None:
@@ -29,9 +30,10 @@ def main() -> None:
     connection = None
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
-        output_path = generate_excel_report(connection)
+        with timed_step("Generate Excel report"):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
+            output_path = generate_excel_report(connection)
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Excel report generation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

@@ -22,6 +22,8 @@ SleepFunction = Callable[[float], None]
 DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE = 20
 DEFAULT_PRICE_DAILY_LOOKBACK_DAYS = 10
 DEFAULT_PRICE_UPDATE_OVERLAP_DAYS = 5
+DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY = True
+DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS = 3
 DEFAULT_PRICE_DOWNLOAD_LOOKBACK_DAYS = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS
 DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 3.0
 DEFAULT_PRICE_BACKFILL_PERIOD = "5y"
@@ -393,76 +395,114 @@ def update_incremental_daily_prices(
     backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
     pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     downloader: Optional[Downloader] = None,
+    batch_downloader: Optional[BatchDownloader] = None,
+    skip_if_latest_date_is_today: bool = (
+        DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY
+    ),
+    stale_after_days: int = DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS,
+    today: Optional[date] = None,
     failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
     sleep_function: SleepFunction = time.sleep,
 ) -> Dict[str, Any]:
-    """Update each ticker from its latest stored price date with an overlap."""
+    """Update stale tickers from latest stored price date with an overlap."""
     if batch_size <= 0:
         raise ValueError("Market data batch size must be greater than zero.")
     if overlap_days < 0:
         raise ValueError("price_update_overlap_days must be zero or greater.")
     if pause_seconds < 0:
         raise ValueError("Market data batch pause must be zero or greater.")
+    if stale_after_days < 0:
+        raise ValueError("price_update_stale_after_days must be zero or greater.")
 
+    today = today or date.today()
     securities = get_active_securities(connection)
     summary = {
         "tickers_checked": len(securities),
         "price_rows_written": 0,
+        "current_tickers": 0,
         "incremental_tickers": 0,
         "full_tickers": 0,
         "failed_tickers": {},
     }
-    print(f"Total tickers to update incrementally: {len(securities)}")
+    expected_market_date = _latest_expected_market_date(today)
+    update_groups: Dict[tuple, List[Dict[str, Any]]] = {}
 
-    for batch_number, batch in enumerate(_chunk_securities(securities, batch_size), 1):
-        print(f"Starting incremental batch {batch_number}")
-        for security in batch:
-            ticker = security["ticker"]
-            latest_price_date = _latest_price_date(connection, security["security_id"])
+    print(f"Total tickers checked for incremental market data: {len(securities)}")
 
-            if latest_price_date is None:
-                start_date = None
-                period = backfill_period
-                summary["full_tickers"] += 1
-                print(f"{ticker}: full download because no price history exists")
-            else:
-                start_date = (latest_price_date - timedelta(days=overlap_days)).isoformat()
-                period = None
-                summary["incremental_tickers"] += 1
-                print(f"{ticker}: incremental download from {start_date}")
+    for security in securities:
+        latest_price_date = _latest_price_date(connection, security["security_id"])
+        classification = _classify_price_update(
+            latest_price_date=latest_price_date,
+            today=today,
+            expected_market_date=expected_market_date,
+            skip_if_latest_date_is_today=skip_if_latest_date_is_today,
+            stale_after_days=stale_after_days,
+            overlap_days=overlap_days,
+            backfill_period=backfill_period,
+        )
 
-            try:
-                if downloader is not None:
-                    price_rows = download_daily_prices(
-                        ticker,
-                        start_date=start_date,
-                        end_date=None,
-                        downloader=downloader,
-                    )
-                else:
-                    price_rows = download_daily_prices_for_batch(
-                        [ticker],
-                        start_date=start_date,
-                        end_date=None,
-                        period=period,
-                    ).get(ticker, [])
+        if classification["mode"] == "current":
+            summary["current_tickers"] += 1
+            continue
 
-                if not price_rows:
-                    summary["failed_tickers"][ticker] = {
-                        "reason": "no_price_rows",
-                        "details": "No price rows were returned for this ticker.",
-                    }
-                    continue
+        if classification["mode"] == "full":
+            summary["full_tickers"] += 1
+        else:
+            summary["incremental_tickers"] += 1
 
-                summary["price_rows_written"] += upsert_daily_prices(
-                    connection,
-                    security["security_id"],
-                    price_rows,
-                )
-            except RuntimeError as error:
-                summary["failed_tickers"][ticker] = _failure_details(error)
+        group_key = (
+            classification["mode"],
+            classification["start_date"],
+            classification["period"],
+        )
+        update_groups.setdefault(group_key, []).append(security)
 
-        if batch_number < len(_chunk_securities(securities, batch_size)) and pause_seconds > 0:
+    print(f"Tickers skipped as current: {summary['current_tickers']}")
+    print(f"Tickers updated incrementally: {summary['incremental_tickers']}")
+    print(f"Tickers needing full download: {summary['full_tickers']}")
+
+    update_batches = [
+        (group_key, batch)
+        for group_key, group_securities in update_groups.items()
+        for batch in _chunk_securities(group_securities, batch_size)
+    ]
+    total_batches = len(update_batches)
+
+    for batch_number, (group_key, batch) in enumerate(update_batches, 1):
+        mode, start_date, period = group_key
+        batch_failed_tickers: Dict[str, Dict[str, str]] = {}
+        print(
+            f"Starting {mode} price batch {batch_number} of {total_batches} "
+            f"({len(batch)} tickers)"
+        )
+
+        if downloader is not None:
+            batch_rows_written = _update_batch_with_single_ticker_downloader(
+                connection,
+                batch,
+                start_date,
+                None,
+                downloader,
+                batch_failed_tickers,
+            )
+        else:
+            batch_rows_written = _update_batch_with_batch_downloader(
+                connection,
+                batch,
+                start_date,
+                None,
+                period,
+                batch_downloader,
+                batch_failed_tickers,
+                sleep_function,
+                pause_seconds,
+            )
+
+        summary["price_rows_written"] += batch_rows_written
+        summary["failed_tickers"].update(batch_failed_tickers)
+        print(f"Rows written in this batch: {batch_rows_written}")
+
+        if batch_number < total_batches and pause_seconds > 0:
             print(f"Pausing {pause_seconds:g} seconds before the next batch")
             sleep_function(pause_seconds)
 
@@ -471,8 +511,10 @@ def update_incremental_daily_prices(
 
     print("Incremental market data update summary")
     print(f"Total tickers checked: {summary['tickers_checked']}")
+    print(f"Tickers skipped as current: {summary['current_tickers']}")
     print(f"Incremental tickers: {summary['incremental_tickers']}")
     print(f"Full-history tickers: {summary['full_tickers']}")
+    print(f"Failed tickers: {len(summary['failed_tickers'])}")
     print(f"Total price rows written: {summary['price_rows_written']}")
     return summary
 
@@ -696,6 +738,58 @@ def _latest_price_date(
         return value
 
     return date.fromisoformat(str(value)[:10])
+
+
+def _classify_price_update(
+    latest_price_date: Optional[date],
+    today: date,
+    expected_market_date: date,
+    skip_if_latest_date_is_today: bool,
+    stale_after_days: int,
+    overlap_days: int,
+    backfill_period: str,
+) -> Dict[str, Any]:
+    """Classify one ticker as current, incremental, or full download."""
+    if latest_price_date is None:
+        return {"mode": "full", "start_date": None, "period": backfill_period}
+
+    if _price_date_is_current_enough(
+        latest_price_date=latest_price_date,
+        today=today,
+        expected_market_date=expected_market_date,
+        skip_if_latest_date_is_today=skip_if_latest_date_is_today,
+        stale_after_days=stale_after_days,
+    ):
+        return {"mode": "current", "start_date": None, "period": None}
+
+    start_date = (latest_price_date - timedelta(days=overlap_days)).isoformat()
+    return {"mode": "incremental", "start_date": start_date, "period": None}
+
+
+def _price_date_is_current_enough(
+    latest_price_date: date,
+    today: date,
+    expected_market_date: date,
+    skip_if_latest_date_is_today: bool,
+    stale_after_days: int,
+) -> bool:
+    """Return whether a ticker can skip a daily price download."""
+    if skip_if_latest_date_is_today and latest_price_date >= today:
+        return True
+
+    if latest_price_date >= expected_market_date:
+        return True
+
+    stale_cutoff_date = today - timedelta(days=stale_after_days)
+    return latest_price_date >= stale_cutoff_date
+
+
+def _latest_expected_market_date(today: date) -> date:
+    """Return a simple expected market date without holiday calendar support."""
+    expected_date = today
+    while expected_date.weekday() >= 5:
+        expected_date -= timedelta(days=1)
+    return expected_date
 
 
 def _chunk_securities(

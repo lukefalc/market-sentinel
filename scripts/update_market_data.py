@@ -18,13 +18,14 @@ from market_sentinel.config.loader import load_named_config  # noqa: E402
 from market_sentinel.data.price_loader import (  # noqa: E402
     DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
-    DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
     DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
+    DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS,
+    DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY,
     update_incremental_daily_prices,
-    update_recent_daily_prices,
 )
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
+from market_sentinel.utils.timing import timed_step  # noqa: E402
 
 
 def main() -> None:
@@ -32,15 +33,24 @@ def main() -> None:
     connection = None
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
-        batch_size, lookback_days, pause_seconds, overlap_days = load_market_data_settings()
-        summary = update_incremental_daily_prices(
-            connection,
-            batch_size=batch_size,
-            overlap_days=overlap_days,
-            pause_seconds=pause_seconds,
-        )
+        with timed_step("Update market data"):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
+            (
+                batch_size,
+                pause_seconds,
+                overlap_days,
+                skip_if_latest_date_is_today,
+                stale_after_days,
+            ) = load_market_data_settings()
+            summary = update_incremental_daily_prices(
+                connection,
+                batch_size=batch_size,
+                overlap_days=overlap_days,
+                pause_seconds=pause_seconds,
+                skip_if_latest_date_is_today=skip_if_latest_date_is_today,
+                stale_after_days=stale_after_days,
+            )
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Market data update failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error
@@ -50,6 +60,7 @@ def main() -> None:
 
     print(f"Checked {summary['tickers_checked']} tickers")
     print(f"Wrote {summary['price_rows_written']} daily price rows")
+    print(f"Current tickers skipped: {summary.get('current_tickers', 0)}")
     print(f"Incremental tickers: {summary.get('incremental_tickers', 0)}")
     print(f"Full-history tickers: {summary.get('full_tickers', 0)}")
 
@@ -70,12 +81,6 @@ def load_market_data_settings():
                 DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
             )
         )
-        lookback_days = int(
-            settings.get(
-                "price_daily_lookback_days",
-                DEFAULT_PRICE_DAILY_LOOKBACK_DAYS,
-            )
-        )
         pause_seconds = float(
             settings.get(
                 "price_download_pause_seconds",
@@ -88,14 +93,43 @@ def load_market_data_settings():
                 DEFAULT_PRICE_UPDATE_OVERLAP_DAYS,
             )
         )
+        skip_if_latest_date_is_today = _coerce_bool(
+            settings.get(
+                "skip_price_update_if_latest_date_is_today",
+                DEFAULT_SKIP_PRICE_UPDATE_IF_LATEST_DATE_IS_TODAY,
+            )
+        )
+        stale_after_days = int(
+            settings.get(
+                "price_update_stale_after_days",
+                DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS,
+            )
+        )
     except (TypeError, ValueError) as error:
         raise ValueError(
             "Market data settings must use numbers for "
-            "price_download_batch_size, price_daily_lookback_days, and "
-            "price_download_pause_seconds, and price_update_overlap_days."
+            "price_download_batch_size, price_download_pause_seconds, "
+            "price_update_overlap_days, and price_update_stale_after_days."
         ) from error
 
-    return batch_size, lookback_days, pause_seconds, overlap_days
+    return (
+        batch_size,
+        pause_seconds,
+        overlap_days,
+        skip_if_latest_date_is_today,
+        stale_after_days,
+    )
+
+
+def _coerce_bool(value) -> bool:
+    """Convert YAML-style truthy values into a bool."""
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    return bool(value)
 
 
 if __name__ == "__main__":

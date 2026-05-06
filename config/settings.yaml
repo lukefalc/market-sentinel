@@ -8,13 +8,17 @@ price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
 price_update_overlap_days: 5
+skip_price_update_if_latest_date_is_today: true
+price_update_stale_after_days: 3
 price_download_pause_seconds: 3
 run_dividends_in_daily_fast: false
+run_dividends_in_daily_process: false
 dividend_download_batch_size: 20
 dividend_download_pause_seconds: 3
 dividend_retry_batch_size: 5
 moving_average_history_days: 260
 moving_average_incremental_recent_days: 10
+moving_average_price_history_buffer_days: 230
 excel_max_rows_per_sheet: 50000
 excel_moving_average_recent_days: 10
 crossover_recent_days: 7

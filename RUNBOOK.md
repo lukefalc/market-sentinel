@@ -99,12 +99,20 @@ This runs the fast daily steps in order:
 
 The fast daily process skips dividend history downloads by default. This keeps
 the normal daily run focused on recent prices, moving averages, crossovers, and
-reports.
+reports. Risk flags still use the latest dividend metrics already stored in the
+database.
 
-If you want the older daily process that also sends the optional email, run:
+If you want the normal daily process that also sends the optional email, run:
 
 ```bash
 PYTHONPATH=src python3 scripts/run_daily_process.py
+```
+
+This normal daily process also skips dividend downloads by default. To force a
+one-off dividend refresh during the daily process, run:
+
+```bash
+PYTHONPATH=src python3 scripts/run_daily_process.py --include-dividends
 ```
 
 ## Run The Weekly Full Process
@@ -115,9 +123,14 @@ Run the fuller weekly command when you want to include dividend updates:
 PYTHONPATH=src python3 scripts/run_weekly_full.py
 ```
 
-The weekly process includes the same reporting steps as the fast daily process,
-but also runs dividend calculations before risk flags and reports. Both new
-process scripts print timing logs around each step and a final timing summary.
+The weekly process includes the same reporting steps as the daily process, but
+also runs dividend calculations before risk flags and reports. It also sends the
+optional daily alert email if email is configured. The process scripts print
+timing logs around each step and a final timing summary.
+
+The main scripts print a start time, finish time, and elapsed seconds. Use these
+timing logs to see where runtime is being spent before changing any settings or
+optimising further.
 
 The PDF report is the main daily report to read. It is chart-led: each selected
 stock gets one landscape page with a trend chart and a short explanation of why
@@ -143,13 +156,16 @@ recent crossover date.
 Market data has three modes.
 
 Incremental mode is for normal daily runs. For each ticker, it checks the latest
-stored price date and downloads from that date minus a small overlap buffer:
+stored price date first. Tickers that already look current are skipped, stale
+tickers are downloaded from the latest stored date minus a small overlap buffer,
+and tickers with no price history use the normal full-history download:
 
 ```bash
 PYTHONPATH=src python3 scripts/update_market_data.py
 ```
 
-Daily lookback mode is still available inside the older daily process.
+Daily lookback mode remains available in the lower-level price loader, but the
+daily process and `scripts/update_market_data.py` use incremental mode.
 
 Backfill mode is for first-time setup or occasional historical refreshes. It
 downloads a larger historical period and can take much longer:
@@ -165,9 +181,10 @@ Both modes process tickers in yfinance batches. This is normal and helps the
 project handle large universes like the S&P 500 without looking stuck.
 
 By default, each batch has 20 tickers, incremental mode overlaps the latest
-stored price date by 5 days, daily lookback mode downloads the last 10 days,
-backfill mode downloads 5 years, and the project pauses 3 seconds between
-batches.
+stored price date by 5 days, tickers are considered current when their latest
+stored price date is today, the latest expected market date, or within a small
+3-day stale threshold, backfill mode downloads 5 years, and the project pauses
+3 seconds between batches.
 
 Failed price updates are saved here:
 
@@ -182,17 +199,21 @@ price_download_batch_size: 20
 price_backfill_period: 5y
 price_daily_lookback_days: 10
 price_update_overlap_days: 5
+skip_price_update_if_latest_date_is_today: true
+price_update_stale_after_days: 3
 price_download_pause_seconds: 3
 run_dividends_in_daily_fast: false
+run_dividends_in_daily_process: false
 ```
 
 During the update you should see:
 
-- Total tickers.
-- Current batch number.
-- Tickers in the current batch.
-- Rows written for the batch.
-- Failed tickers for the batch.
+- Total tickers checked.
+- Tickers skipped as current.
+- Tickers updated incrementally.
+- Tickers needing full download.
+- Rows written for each download batch.
+- Failed tickers.
 - A final summary.
 
 Dividend downloads are also processed in batches. By default, each dividend
@@ -213,20 +234,32 @@ dividend_download_pause_seconds: 3
 dividend_retry_batch_size: 5
 ```
 
-Moving average calculation also shows ticker-by-ticker progress. By default it
-stores SMA rows only for the most recent 260 price dates, while still using
-earlier prices to calculate longer averages such as the 200-day SMA.
+Moving average calculation also shows ticker-by-ticker progress. The normal
+daily script now runs in incremental mode, so it only recalculates recent or
+missing SMA rows instead of rebuilding the full moving-average history each day.
+It still loads enough recent price history to calculate longer averages such as
+the 200-day SMA.
 
 The setting lives in `config/settings.yaml`:
 
 ```yaml
 moving_average_history_days: 260
 moving_average_incremental_recent_days: 10
+moving_average_price_history_buffer_days: 230
 ```
 
-The fast daily process uses `moving_average_incremental_recent_days` and stores
-only recent SMA rows while still loading enough price history to calculate the
-longest configured SMA.
+Use the daily incremental calculation during normal runs:
+
+```bash
+PYTHONPATH=src python3 scripts/calculate_moving_averages.py
+```
+
+Use the full backfill script only when you deliberately want to rebuild stored
+moving-average history:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_moving_averages.py
+```
 
 ## Update The FTSE 100 And S&P 500 Universes
 

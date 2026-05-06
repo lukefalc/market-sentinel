@@ -17,6 +17,7 @@ from market_sentinel.data.price_loader import get_active_securities
 DEFAULT_PERIODS = [7, 30, 50, 100, 200]
 DEFAULT_MOVING_AVERAGE_HISTORY_DAYS = 260
 DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS = 10
+DEFAULT_MOVING_AVERAGE_PRICE_HISTORY_BUFFER_DAYS = 230
 
 
 def load_moving_average_periods(config_dir: Optional[Path] = None) -> List[int]:
@@ -79,6 +80,36 @@ def get_closing_prices(
         raise RuntimeError(
             "Could not read daily prices from DuckDB. Check that the database "
             "is open and the daily_prices table has been created."
+        ) from error
+
+    return [{"price_date": row[0], "close_price": row[1]} for row in rows]
+
+
+def get_recent_closing_prices(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+    row_limit: int,
+) -> List[Dict[str, Any]]:
+    """Read a bounded recent price window for one security, oldest first."""
+    try:
+        rows = connection.execute(
+            """
+            SELECT price_date, close_price
+            FROM (
+                SELECT price_date, close_price
+                FROM daily_prices
+                WHERE security_id = ?
+                ORDER BY price_date DESC
+                LIMIT ?
+            )
+            ORDER BY price_date
+            """,
+            [security_id, row_limit],
+        ).fetchall()
+    except duckdb.Error as error:
+        raise RuntimeError(
+            "Could not read recent daily prices from DuckDB. Check that the "
+            "database is open and the daily_prices table has been created."
         ) from error
 
     return [{"price_date": row[0], "close_price": row[1]} for row in rows]
@@ -189,6 +220,86 @@ def upsert_moving_average_signal(
         ) from error
 
 
+def bulk_upsert_moving_average_signals(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+    moving_average_rows: List[Dict[str, Any]],
+) -> int:
+    """Bulk replace SMA rows for one security without creating duplicates."""
+    if not moving_average_rows:
+        return 0
+
+    try:
+        columns = _get_table_columns(connection, "moving_average_signals")
+        connection.execute(
+            """
+            CREATE TEMPORARY TABLE temp_sma_updates (
+                security_id INTEGER,
+                signal_date DATE,
+                moving_average_period_days INTEGER,
+                moving_average_value DOUBLE
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO temp_sma_updates (
+                security_id,
+                signal_date,
+                moving_average_period_days,
+                moving_average_value
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    security_id,
+                    row["signal_date"],
+                    row["period"],
+                    row["average"],
+                )
+                for row in moving_average_rows
+            ],
+        )
+        connection.execute(
+            """
+            DELETE FROM moving_average_signals
+            USING temp_sma_updates
+            WHERE moving_average_signals.security_id = temp_sma_updates.security_id
+              AND moving_average_signals.signal_date = temp_sma_updates.signal_date
+              AND moving_average_signals.signal_type = 'SMA'
+              AND moving_average_signals.moving_average_period_days =
+                  temp_sma_updates.moving_average_period_days
+            """
+        )
+        next_id = connection.execute(
+            "SELECT COALESCE(MAX(signal_id), 0) + 1 FROM moving_average_signals"
+        ).fetchone()[0]
+        insert_columns = _bulk_insert_signal_columns(columns)
+        select_columns = _bulk_insert_signal_select_columns(columns, next_id)
+        connection.execute(
+            f"""
+            INSERT INTO moving_average_signals ({insert_columns})
+            SELECT {select_columns}
+            FROM temp_sma_updates
+            ORDER BY signal_date, moving_average_period_days
+            """
+        )
+        connection.execute("DROP TABLE temp_sma_updates")
+    except duckdb.Error as error:
+        try:
+            connection.execute("DROP TABLE IF EXISTS temp_sma_updates")
+        except duckdb.Error:
+            pass
+        raise RuntimeError(
+            "Could not bulk save moving averages to DuckDB. Check that the "
+            "database is open and the moving_average_signals table has been "
+            f"created. Details: {error}"
+        ) from error
+
+    return len(moving_average_rows)
+
+
 def calculate_and_store_moving_averages(
     connection: duckdb.DuckDBPyConnection,
     config_dir: Optional[Path] = None,
@@ -256,22 +367,29 @@ def calculate_and_store_incremental_moving_averages(
     connection: duckdb.DuckDBPyConnection,
     config_dir: Optional[Path] = None,
     recent_days: int = DEFAULT_MOVING_AVERAGE_INCREMENTAL_RECENT_DAYS,
+    price_history_buffer_days: int = DEFAULT_MOVING_AVERAGE_PRICE_HISTORY_BUFFER_DAYS,
 ) -> Dict[str, Any]:
     """Calculate and store only recent SMA rows using enough price history."""
     if recent_days <= 0:
         raise ValueError(
             "moving_average_incremental_recent_days must be greater than zero."
         )
+    if price_history_buffer_days < 0:
+        raise ValueError(
+            "moving_average_price_history_buffer_days must be zero or greater."
+        )
 
     periods = load_moving_average_periods(config_dir)
     longest_period = max(periods)
-    history_days = longest_period + recent_days
+    price_row_limit = longest_period + price_history_buffer_days + recent_days
     securities = get_active_securities(connection)
     summary = {
         "tickers_checked": len(securities),
         "signals_written": 0,
         "skipped_tickers": {},
         "mode": "incremental",
+        "incremental_tickers": 0,
+        "limited_backfill_tickers": 0,
     }
 
     print(f"Total tickers for incremental moving averages: {len(securities)}")
@@ -281,14 +399,32 @@ def calculate_and_store_incremental_moving_averages(
         print(
             f"Processing ticker {ticker_number} of {len(securities)}: {ticker}"
         )
-        price_rows = get_closing_prices(connection, security["security_id"])
+        latest_price_date = _latest_price_date(connection, security["security_id"])
+        latest_sma_date = _latest_sma_date(connection, security["security_id"])
+        price_rows = get_recent_closing_prices(
+            connection,
+            security["security_id"],
+            price_row_limit,
+        )
         moving_average_rows = calculate_historical_moving_averages(
             price_rows,
             periods,
-            history_days=history_days,
+            history_days=price_history_buffer_days + recent_days,
         )
-        latest_price_date = price_rows[-1]["price_date"] if price_rows else None
-        cutoff_date = _date_from_value(latest_price_date, recent_days)
+        if latest_sma_date is None:
+            mode = "limited backfill"
+            summary["limited_backfill_tickers"] += 1
+            cutoff_date = _date_from_value(latest_price_date, recent_days)
+        else:
+            mode = "incremental"
+            summary["incremental_tickers"] += 1
+            recent_cutoff_date = _date_from_value(latest_price_date, recent_days)
+            missing_cutoff_date = latest_sma_date + timedelta(days=1)
+            cutoff_date = min(
+                date_value
+                for date_value in [recent_cutoff_date, missing_cutoff_date]
+                if date_value is not None
+            )
         recent_rows = [
             row
             for row in moving_average_rows
@@ -303,24 +439,56 @@ def calculate_and_store_incremental_moving_averages(
             print(f"Rows written for {ticker}: 0")
             continue
 
-        rows_written_for_ticker = 0
-        for row in recent_rows:
-            upsert_moving_average_signal(
-                connection,
-                security["security_id"],
-                row["signal_date"],
-                row["period"],
-                row["average"],
-            )
-            summary["signals_written"] += 1
-            rows_written_for_ticker += 1
+        rows_written_for_ticker = bulk_upsert_moving_average_signals(
+            connection,
+            security["security_id"],
+            recent_rows,
+        )
+        summary["signals_written"] += rows_written_for_ticker
 
-        print(f"Rows written for {ticker}: {rows_written_for_ticker}")
+        print(
+            f"{ticker}: {mode}; latest price date {latest_price_date}; "
+            f"latest SMA date {latest_sma_date or 'none'}; "
+            f"rows calculated {rows_written_for_ticker}"
+        )
 
     print("Incremental moving average calculation summary")
     print(f"Total tickers checked: {summary['tickers_checked']}")
     print(f"Total moving average rows written: {summary['signals_written']}")
     return summary
+
+
+def _latest_price_date(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+) -> Optional[date]:
+    """Return the latest stored price date for one security."""
+    value = connection.execute(
+        """
+        SELECT MAX(price_date)
+        FROM daily_prices
+        WHERE security_id = ?
+        """,
+        [security_id],
+    ).fetchone()[0]
+    return _normalise_date_value(value)
+
+
+def _latest_sma_date(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+) -> Optional[date]:
+    """Return the latest stored SMA date for one security."""
+    value = connection.execute(
+        """
+        SELECT MAX(signal_date)
+        FROM moving_average_signals
+        WHERE security_id = ?
+          AND signal_type = 'SMA'
+        """,
+        [security_id],
+    ).fetchone()[0]
+    return _normalise_date_value(value)
 
 
 def _first_stored_price_index(
@@ -346,6 +514,20 @@ def _date_from_value(value: Any, days_back: int) -> Optional[Any]:
         return value - timedelta(days=days_back - 1)
 
     return date.fromisoformat(str(value)[:10]) - timedelta(days=days_back - 1)
+
+
+def _normalise_date_value(value: Any) -> Optional[date]:
+    """Convert a DuckDB date-like value to a date."""
+    if value is None:
+        return None
+
+    if hasattr(value, "date") and not isinstance(value, date):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    return date.fromisoformat(str(value)[:10])
 
 
 def _get_table_columns(
@@ -431,6 +613,34 @@ def _insert_signal_columns(columns: set) -> str:
         insert_columns.append("long_average")
 
     return ",\n                    ".join(insert_columns)
+
+
+def _bulk_insert_signal_columns(columns: set) -> str:
+    """Return INSERT columns for bulk SMA writes."""
+    return _insert_signal_columns(columns)
+
+
+def _bulk_insert_signal_select_columns(columns: set, first_signal_id: int) -> str:
+    """Return SELECT columns for bulk SMA writes from temp_sma_updates."""
+    select_columns = [
+        f"{first_signal_id} + ROW_NUMBER() OVER () - 1",
+        "security_id",
+        "signal_date",
+        "moving_average_period_days",
+        "moving_average_value",
+        "'SMA'",
+    ]
+
+    if "short_window_days" in columns:
+        select_columns.append("moving_average_period_days")
+    if "long_window_days" in columns:
+        select_columns.append("moving_average_period_days")
+    if "short_average" in columns:
+        select_columns.append("moving_average_value")
+    if "long_average" in columns:
+        select_columns.append("moving_average_value")
+
+    return ", ".join(select_columns)
 
 
 def _update_signal_query(columns: set) -> str:

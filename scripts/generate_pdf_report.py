@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 from market_sentinel.database.connection import open_duckdb_connection  # noqa: E402
 from market_sentinel.database.schema import initialise_database_schema  # noqa: E402
 from market_sentinel.reports.pdf_report import generate_pdf_report  # noqa: E402
+from market_sentinel.utils.timing import timed_step  # noqa: E402
 
 
 def main() -> None:
@@ -24,9 +25,10 @@ def main() -> None:
     connection = None
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
-        output_path = generate_pdf_report(connection)
+        with timed_step("Generate PDF report"):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
+            output_path = generate_pdf_report(connection)
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"PDF report generation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

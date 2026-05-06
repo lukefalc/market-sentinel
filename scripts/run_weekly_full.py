@@ -6,7 +6,6 @@ Run this script from the project root with:
 """
 
 import sys
-import time
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -18,6 +17,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from market_sentinel.alerts.email_notifier import send_daily_alert_email  # noqa: E402
 from market_sentinel.analytics.crossovers import detect_and_store_crossovers  # noqa: E402
 from market_sentinel.analytics.dividends import calculate_and_store_dividends  # noqa: E402
 from market_sentinel.analytics.moving_averages import calculate_and_store_moving_averages  # noqa: E402
@@ -29,6 +29,7 @@ from market_sentinel.database.schema import initialise_database_schema  # noqa: 
 from market_sentinel.reports.charts import generate_charts  # noqa: E402
 from market_sentinel.reports.excel_report import generate_excel_report  # noqa: E402
 from market_sentinel.reports.pdf_report import generate_pdf_report  # noqa: E402
+from market_sentinel.utils.timing import print_timing_summary, timed_step  # noqa: E402
 
 Step = Tuple[str, Callable]
 
@@ -41,17 +42,14 @@ def main() -> None:
     timings = []
 
     try:
-        connection = open_duckdb_connection()
-        initialise_database_schema(connection)
+        with timed_step("Open database", timings):
+            connection = open_duckdb_connection()
+            initialise_database_schema(connection)
 
         for step_name, step_function in weekly_full_steps():
-            start_time = time.perf_counter()
-            print(f"Starting: {step_name}")
-            result = step_function(connection)
-            elapsed = time.perf_counter() - start_time
-            timings.append((step_name, elapsed))
+            with timed_step(step_name, timings):
+                result = step_function(connection)
             _print_step_result(step_name, result)
-            print(f"Finished: {step_name} in {elapsed:.1f}s")
     except (RuntimeError, ValueError, FileNotFoundError) as error:
         print(f"Weekly full process failed during: {step_name}", file=sys.stderr)
         print(f"Reason: {error}", file=sys.stderr)
@@ -60,7 +58,7 @@ def main() -> None:
         if connection is not None:
             connection.close()
 
-    _print_timing_summary(timings)
+    print_timing_summary(timings)
     print("Weekly full process completed successfully.")
 
 
@@ -76,6 +74,7 @@ def weekly_full_steps() -> List[Step]:
         ("Generate charts", generate_charts),
         ("Generate PDF report", generate_pdf_report),
         ("Generate Excel report", generate_excel_report),
+        ("Send daily alert email", _send_daily_alert_email),
     ]
 
 
@@ -98,11 +97,18 @@ def _print_step_result(step_name: str, result) -> None:
     print(f"{step_name} result: {result}")
 
 
-def _print_timing_summary(timings) -> None:
-    """Print final timing summary."""
-    print("Weekly full timing summary")
-    for step_name, elapsed in timings:
-        print(f"- {step_name}: {elapsed:.1f}s")
+def _send_daily_alert_email(connection):
+    """Send the optional daily email alert summary."""
+    try:
+        email_sent = send_daily_alert_email(connection)
+    except ValueError as error:
+        print(
+            "Daily alert email was not sent because the email settings are "
+            f"incomplete. {error}"
+        )
+        return {"email_sent": False}
+
+    return {"email_sent": email_sent}
 
 
 if __name__ == "__main__":
