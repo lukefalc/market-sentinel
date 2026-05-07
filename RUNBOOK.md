@@ -155,9 +155,18 @@ PYTHONPATH=src python3 scripts/generate_charts.py --force
 ```
 
 By default, charts are kept simple: they show close price as a thin black dotted
-line plus the 7-day, 30-day, and 50-day moving averages over the last 180 days.
+line plus the 7-day, 30-day, and 50-day moving averages over the latest 180
+stored price rows.
 The project limits chart generation to 50 tickers, prioritised by the most
 recent crossover date. Chart image titles include the same market marker.
+Charts load the latest configured number of stored price rows by security ID,
+so FTSE 350 tickers ending in `.L` use their own database rows rather than any
+ticker text inference. If a ticker has fewer rows than `chart_lookback_days`,
+chart generation prints a warning and shows all available rows.
+The chart SMA overlays are calculated directly from the loaded chart prices so
+the 7-day, 30-day, and 50-day lines span the visible chart window. The stored
+`moving_average_signals` table is still used for crossovers, reports, and
+candidate grades.
 
 Market data has three modes.
 

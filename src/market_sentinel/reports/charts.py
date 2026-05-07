@@ -173,6 +173,8 @@ def generate_charts(
             print(f"Skipped {ticker}: {skipped[ticker]}")
             continue
 
+        _print_chart_data_debug(ticker, chart_data, lookback_days, sma_periods)
+
         chart_data["trade_candidate"] = trade_candidate
         chart_data["candidate_signal"] = (selection.get("signals") or [None])[0]
         chart_data["show_crossover_marker"] = show_crossover_marker
@@ -216,6 +218,7 @@ def generate_charts(
                 print(f"Force-regenerated chart: {output_path}")
             else:
                 print(f"Created chart: {output_path}")
+        print(f"Chart file written: {output_path}")
 
         generated_files.append(output_path)
         chart_details.append(
@@ -725,23 +728,29 @@ def _fetch_chart_data(
             "market": market_marker,
         }
 
-    cutoff_date = latest_date - timedelta(days=lookback_days)
     price_rows = connection.execute(
         """
-        SELECT
-            prices.price_date,
-            prices.close_price,
-            prices.high_price,
-            prices.low_price
-        FROM daily_prices AS prices
-        INNER JOIN securities
-            ON prices.security_id = securities.security_id
-        WHERE prices.security_id = ?
-          AND prices.price_date >= ?
-        ORDER BY prices.price_date
+        SELECT *
+        FROM (
+            SELECT
+                prices.price_date,
+                prices.close_price,
+                prices.high_price,
+                prices.low_price
+            FROM daily_prices AS prices
+            WHERE prices.security_id = ?
+            ORDER BY prices.price_date DESC
+            LIMIT ?
+        ) AS latest_prices
+        ORDER BY price_date
         """,
-        [security_id, cutoff_date],
+        [security_id, lookback_days],
     ).fetchall()
+    earliest_chart_date = _to_date(price_rows[0][0]) if price_rows else None
+    latest_chart_date = _to_date(price_rows[-1][0]) if price_rows else None
+    moving_average_cutoff_date = (
+        earliest_chart_date or latest_date - timedelta(days=lookback_days)
+    )
 
     moving_averages: Dict[int, List[Tuple[date, float]]] = {}
     for period in sma_periods:
@@ -755,17 +764,58 @@ def _fetch_chart_data(
               AND signals.signal_date >= ?
             ORDER BY signals.signal_date
             """,
-            [security_id, period, cutoff_date],
+            [security_id, period, moving_average_cutoff_date],
         ).fetchall()
         moving_averages[period] = [(_to_date(row[0]), row[1]) for row in rows]
 
     return {
         "prices": [(_to_date(row[0]), row[1], row[2], row[3]) for row in price_rows],
         "moving_averages": moving_averages,
+        "security_id": security_id,
         "company_name": company_name or "",
         "currency": currency or "",
         "market": market_marker,
+        "earliest_chart_date": earliest_chart_date,
+        "latest_chart_date": latest_chart_date,
+        "requested_lookback_days": lookback_days,
     }
+
+
+def _print_chart_data_debug(
+    ticker: str,
+    chart_data: Dict[str, Any],
+    lookback_days: int,
+    sma_periods: Sequence[int] = DEFAULT_MOVING_AVERAGE_PERIODS,
+) -> None:
+    """Print useful chart data diagnostics for one ticker."""
+    price_rows = chart_data.get("prices") or []
+    earliest_date = chart_data.get("earliest_chart_date")
+    latest_date = chart_data.get("latest_chart_date")
+    market = _market_marker(chart_data.get("market"), ticker)
+    chart_sma_series = _calculate_chart_sma_series(price_rows, sma_periods)
+    chart_sma_counts = {
+        period: len(series)
+        for period, series in chart_sma_series.items()
+    }
+
+    print(
+        "Chart data: "
+        f"ticker={ticker} | market={market} | price rows loaded={len(price_rows)} "
+        f"| earliest chart date={_debug_date(earliest_date)} "
+        f"| latest chart date={_debug_date(latest_date)}"
+    )
+    print(
+        "Chart SMA overlays: "
+        f"periods={list(chart_sma_counts)} | non-null values={chart_sma_counts}"
+    )
+
+    if len(price_rows) < lookback_days:
+        print(
+            "Chart warning: "
+            f"{ticker} has {len(price_rows)} price row(s), fewer than the "
+            f"configured chart_lookback_days={lookback_days}; showing all "
+            "available rows."
+        )
 
 
 def _write_chart_image(
@@ -808,10 +858,9 @@ def _write_chart_image(
             alpha=0.8,
         )
 
+    chart_sma_series = _calculate_chart_sma_series(price_rows, sma_periods)
     for period in sma_periods:
-        sma_rows = [
-            row for row in chart_data["moving_averages"].get(period, []) if row[0]
-        ]
+        sma_rows = chart_sma_series.get(period, [])
         if not sma_rows:
             continue
         ax.plot(
@@ -845,6 +894,37 @@ def _write_chart_image(
     fig.tight_layout()
     fig.savefig(output_path, dpi=120)
     plt.close(fig)
+
+
+def _calculate_chart_sma_series(
+    price_rows: Sequence[Tuple[Any, ...]],
+    sma_periods: Sequence[int],
+) -> Dict[int, List[Tuple[date, float]]]:
+    """Calculate chart-only SMA overlay series from visible close prices."""
+    clean_prices = [
+        (_to_date(row[0]), row[1])
+        for row in price_rows
+        if row and _to_date(row[0]) is not None and row[1] is not None
+    ]
+    sma_series: Dict[int, List[Tuple[date, float]]] = {}
+
+    for period in sma_periods:
+        if period <= 0:
+            continue
+
+        period_rows: List[Tuple[date, float]] = []
+        rolling_closes: List[float] = []
+
+        for price_date, close_price in clean_prices:
+            rolling_closes.append(float(close_price))
+            if len(rolling_closes) > period:
+                rolling_closes.pop(0)
+            if len(rolling_closes) == period:
+                period_rows.append((price_date, sum(rolling_closes) / period))
+
+        sma_series[period] = period_rows
+
+    return sma_series
 
 
 def _add_20_day_reference_line(ax, chart_data: Dict[str, Any]) -> None:
@@ -1060,6 +1140,15 @@ def _to_date(value: Any) -> Optional[date]:
         return value
 
     return date.fromisoformat(str(value)[:10])
+
+
+def _debug_date(value: Any) -> str:
+    """Return a readable date for chart debug output."""
+    parsed_date = _to_date(value)
+    if parsed_date is None:
+        return "Not available"
+
+    return parsed_date.isoformat()
 
 
 def _date_cache_value(value: Any) -> Optional[str]:

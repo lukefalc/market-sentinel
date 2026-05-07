@@ -1,6 +1,6 @@
 """Tests for chart generation."""
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from market_sentinel.database.connection import open_duckdb_connection
@@ -560,6 +560,118 @@ def test_generate_charts_uses_simple_defaults(
     assert observed["show_20_day_reference"] is False
 
 
+def test_ftse_chart_data_fetches_full_lookback_rows_by_security_id(
+    tmp_path: Path,
+) -> None:
+    """FTSE charts should load the full stored row lookback for .L tickers."""
+    connection, _config_dir, _chart_dir = open_test_database(tmp_path)
+
+    try:
+        insert_chart_security(connection, 10, "HSBA.L")
+        connection.execute(
+            "UPDATE securities SET market = 'FTSE 350', currency = 'GBP' "
+            "WHERE ticker = 'HSBA.L'"
+        )
+        start_date = date(2025, 1, 1)
+        for index in range(220):
+            price_date = start_date + timedelta(days=index * 2)
+            connection.execute(
+                """
+                INSERT INTO daily_prices (
+                    price_id,
+                    security_id,
+                    price_date,
+                    high_price,
+                    low_price,
+                    close_price
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    10000 + index,
+                    10,
+                    price_date.isoformat(),
+                    100.0 + index,
+                    98.0 + index,
+                    99.0 + index,
+                ],
+            )
+
+        chart_data = charts_module._fetch_chart_data(
+            connection,
+            "HSBA.L",
+            180,
+            [7, 30, 50],
+        )
+    finally:
+        connection.close()
+
+    assert chart_data["security_id"] == 10
+    assert chart_data["market"] == "FTSE 350"
+    assert chart_data["currency"] == "GBP"
+    assert len(chart_data["prices"]) == 180
+    assert chart_data["earliest_chart_date"] == start_date + timedelta(days=40 * 2)
+    assert chart_data["latest_chart_date"] == start_date + timedelta(days=219 * 2)
+
+
+def test_chart_debug_warns_when_fewer_than_lookback_rows(capsys) -> None:
+    """Sparse FTSE history should warn but still chart all available rows."""
+    charts_module._print_chart_data_debug(
+        "BARC.L",
+        {
+            "market": "FTSE 350",
+            "prices": [
+                (date(2026, 5, 1), 100.0, 101.0, 99.0),
+                (date(2026, 5, 2), 101.0, 102.0, 100.0),
+            ],
+            "earliest_chart_date": date(2026, 5, 1),
+            "latest_chart_date": date(2026, 5, 2),
+        },
+        180,
+        [7, 30, 50],
+    )
+
+    captured = capsys.readouterr()
+    assert "ticker=BARC.L" in captured.out
+    assert "market=FTSE 350" in captured.out
+    assert "price rows loaded=2" in captured.out
+    assert "fewer than the configured chart_lookback_days=180" in captured.out
+    assert "non-null values={7: 0, 30: 0, 50: 0}" in captured.out
+
+
+def test_chart_sma_overlays_are_calculated_from_visible_prices() -> None:
+    """Chart SMA overlays should span the visible window once enough prices exist."""
+    price_rows = [
+        (date(2026, 1, 1) + timedelta(days=index), float(index + 1), None, None)
+        for index in range(60)
+    ]
+
+    sma_series = charts_module._calculate_chart_sma_series(price_rows, [7, 30, 50])
+
+    assert len(sma_series[7]) == 54
+    assert sma_series[7][0][0] == date(2026, 1, 7)
+    assert sma_series[7][0][1] == 4.0
+    assert sma_series[7][-1][0] == date(2026, 3, 1)
+    assert len(sma_series[30]) == 31
+    assert sma_series[30][0][0] == date(2026, 1, 30)
+    assert len(sma_series[50]) == 11
+    assert sma_series[50][0][0] == date(2026, 2, 19)
+
+
+def test_chart_sma_overlays_handle_fewer_than_50_prices() -> None:
+    """Charts should still render shorter histories without 50-day SMA rows."""
+    price_rows = [
+        (date(2026, 1, 1) + timedelta(days=index), float(index + 1), None, None)
+        for index in range(40)
+    ]
+
+    sma_series = charts_module._calculate_chart_sma_series(price_rows, [7, 30, 50])
+
+    assert len(sma_series[7]) == 34
+    assert len(sma_series[30]) == 11
+    assert sma_series[50] == []
+
+
 def test_generate_charts_passes_selected_crossover_date_to_writer(
     tmp_path: Path,
     monkeypatch,
@@ -666,6 +778,75 @@ def test_force_generation_bypasses_cached_images(
     assert summary["charts_reused"] == 0
     assert summary["charts_force_regenerated"] == 1
     assert write_calls == ["AAA"]
+    assert "Force-regenerated chart:" in captured.out
+
+
+def test_force_generation_regenerates_ftse_chart_file(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Force mode should regenerate cached FTSE chart PNGs."""
+    connection, config_dir, _chart_dir = open_test_database(tmp_path)
+    write_calls = []
+
+    def fake_build_trade_candidate(connection_arg, ticker, signal, config_dir=None):
+        return {
+            "ticker": ticker,
+            "signal_direction": "Bullish",
+            "action_grade": "Strong Buy Setup",
+            "crossover_date": date(2026, 5, 2),
+            "review_levels": {"20-day low": 98.5},
+        }
+
+    def fake_fetch_chart_data(connection_arg, ticker, lookback_days, sma_periods):
+        return {
+            "prices": [
+                (date(2026, 5, 1), 100.0, 101.0, 99.0),
+                (date(2026, 5, 2), 104.0, 105.0, 103.0),
+            ],
+            "moving_averages": {},
+            "company_name": "HSBC Holdings",
+            "market": "FTSE 350",
+            "currency": "GBP",
+            "earliest_chart_date": date(2026, 5, 1),
+            "latest_chart_date": date(2026, 5, 2),
+        }
+
+    def fake_writer(
+        ticker,
+        chart_data,
+        output_path,
+        show_close_price,
+        sma_periods,
+        close_price_style,
+        close_price_color,
+        close_price_linewidth,
+    ):
+        write_calls.append((ticker, chart_data["market"], output_path.name))
+        output_path.write_bytes(b"forced ftse chart")
+
+    monkeypatch.setattr(charts_module, "build_trade_candidate", fake_build_trade_candidate)
+    monkeypatch.setattr(charts_module, "_fetch_chart_data", fake_fetch_chart_data)
+    monkeypatch.setattr(charts_module, "_chart_is_current", lambda output_path, chart_data: True)
+    monkeypatch.setattr(charts_module, "_write_chart_image", fake_writer)
+
+    try:
+        chart_dir = config_dir.parent / "charts"
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        (chart_dir / "HSBA_L_price_trend.png").write_bytes(b"cached ftse chart")
+        summary = generate_charts(
+            connection,
+            config_dir=config_dir,
+            tickers=["HSBA.L"],
+            force=True,
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+    assert summary["charts_force_regenerated"] == 1
+    assert write_calls == [("HSBA.L", "FTSE 350", "HSBA_L_price_trend.png")]
     assert "Force-regenerated chart:" in captured.out
 
 
