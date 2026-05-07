@@ -10,8 +10,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 from openpyxl import Workbook
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from market_sentinel.analytics.trade_candidates import build_trade_candidate
 from market_sentinel.analytics.crossovers import (
@@ -46,6 +48,25 @@ HEADER_FILL = PatternFill(
     fgColor="D9EAF7",
 )
 HEADER_FONT = Font(bold=True)
+STRONG_BUY_FILL = PatternFill(fill_type="solid", fgColor="D9EAD3")
+STRONG_SELL_FILL = PatternFill(fill_type="solid", fgColor="F4CCCC")
+TRACK_ONLY_FILL = PatternFill(fill_type="solid", fgColor="F3F3F3")
+REVIEW_DECISION_VALUES = [
+    "Watch",
+    "Paper trade",
+    "Trade",
+    "Ignore",
+    "Already held",
+]
+TRADE_CANDIDATE_REVIEW_HEADERS = [
+    "Review decision",
+    "Review notes",
+    "Planned entry",
+    "Planned stop",
+    "Planned risk %",
+    "Position size",
+    "Reviewed date",
+]
 
 
 def default_report_filename(report_date: Optional[date] = None) -> str:
@@ -130,9 +151,8 @@ def generate_excel_report(
                 limit_notes,
             )
 
-        _write_table_sheet(
+        _write_trade_candidates_sheet(
             workbook,
-            "Trade Candidates",
             _fetch_trade_candidates(
                 connection,
                 selected_date,
@@ -256,6 +276,34 @@ def _write_table_sheet(
     _write_rows(sheet, [headers] + visible_rows)
 
 
+def _write_trade_candidates_sheet(
+    workbook: Workbook,
+    table_data: Tuple[List[str], List[Sequence[Any]]],
+    max_rows_per_sheet: int,
+    limit_notes: List[str],
+) -> None:
+    """Create the Trade Candidates worksheet with review workflow columns."""
+    sheet = workbook.create_sheet("Trade Candidates")
+    headers, rows = table_data
+    visible_rows = rows[:max_rows_per_sheet]
+
+    if len(rows) > max_rows_per_sheet:
+        limit_notes.append(
+            f"Trade Candidates was limited to {max_rows_per_sheet} rows because "
+            "the full dataset is larger than a readable Excel daily report."
+        )
+
+    workflow_headers = headers + TRADE_CANDIDATE_REVIEW_HEADERS
+    workflow_rows = [
+        list(row) + [""] * len(TRADE_CANDIDATE_REVIEW_HEADERS)
+        for row in visible_rows
+    ]
+    _write_rows(sheet, [workflow_headers] + workflow_rows)
+    _add_review_decision_validation(sheet, workflow_headers)
+    _add_trade_candidate_conditional_formatting(sheet, workflow_headers)
+    _auto_size_columns(sheet)
+
+
 def _write_rows(sheet, rows: Iterable[Sequence[Any]]) -> None:
     """Write rows and apply simple formatting."""
     for row in rows:
@@ -269,6 +317,62 @@ def _write_rows(sheet, rows: Iterable[Sequence[Any]]) -> None:
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     _auto_size_columns(sheet)
+
+
+def _add_review_decision_validation(sheet, headers: Sequence[str]) -> None:
+    """Add a simple dropdown for daily candidate review decisions."""
+    if "Review decision" not in headers:
+        return
+
+    column_index = headers.index("Review decision") + 1
+    column_letter = get_column_letter(column_index)
+    formula_values = ",".join(REVIEW_DECISION_VALUES)
+    validation = DataValidation(
+        type="list",
+        formula1=f'"{formula_values}"',
+        allow_blank=True,
+    )
+    validation.error = "Choose one of the suggested review decisions."
+    validation.errorTitle = "Review decision"
+    validation.prompt = "Use Trade Candidates for daily review."
+    validation.promptTitle = "Review decision"
+    sheet.add_data_validation(validation)
+    validation.add(f"{column_letter}2:{column_letter}{max(sheet.max_row, 1000)}")
+
+
+def _add_trade_candidate_conditional_formatting(
+    sheet,
+    headers: Sequence[str],
+) -> None:
+    """Highlight setup grades without changing candidate scoring."""
+    if "Action Grade" not in headers or sheet.max_row < 2:
+        return
+
+    grade_column = get_column_letter(headers.index("Action Grade") + 1)
+    last_column = get_column_letter(len(headers))
+    data_range = f"A2:{last_column}{sheet.max_row}"
+    grade_reference = f"${grade_column}2"
+    sheet.conditional_formatting.add(
+        data_range,
+        FormulaRule(
+            formula=[f'{grade_reference}="Strong Buy Setup"'],
+            fill=STRONG_BUY_FILL,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        data_range,
+        FormulaRule(
+            formula=[f'{grade_reference}="Strong Sell Setup"'],
+            fill=STRONG_SELL_FILL,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        data_range,
+        FormulaRule(
+            formula=[f'{grade_reference}="Track Only"'],
+            fill=TRACK_ONLY_FILL,
+        ),
+    )
 
 
 def _write_position_sizing_sheet(workbook: Workbook) -> None:
@@ -327,7 +431,7 @@ def _write_trade_journal_sheet(workbook: Workbook) -> None:
             "",
             "",
             "",
-            "Watch | Paper trade | Trade | Ignore",
+            "Watch | Paper trade | Trade | Ignore | Already held",
             "",
             "",
             "",

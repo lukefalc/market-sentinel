@@ -377,7 +377,9 @@ The Excel workbook is the detailed decision workbook. It keeps the existing
 data tabs and also includes:
 
 - `Trade Candidates`: all recent crossover candidates, including every action
-  grade, sorted from strong buy setups through strong sell setups.
+  grade, sorted from strong buy setups through strong sell setups. Use Trade
+  Candidates for daily review. Use Trade Journal for permanent decisions and
+  outcomes.
 - `Position Sizing`: a simple editable planning calculator with example values
   for trading capital, risk per trade, entry price, and stop price. It uses
   basic formulas for maximum risk, risk per unit/share/point, and suggested
@@ -387,6 +389,8 @@ data tabs and also includes:
 
 The position sizing sheet is a planning calculator, not financial advice. The
 example values are placeholders to edit before using the workbook for review.
+The generated workbook can be refreshed each run, so keep lasting review notes,
+decisions, and outcomes in `Trade Journal`.
 Ticker-level workbook sheets include a `Market` column so S&P 500 and FTSE 350
 stocks can be filtered and reviewed separately.
 

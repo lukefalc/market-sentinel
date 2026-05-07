@@ -10,6 +10,8 @@ from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 from market_sentinel.reports.excel_report import (
     EXPECTED_WORKSHEET_TITLES,
+    REVIEW_DECISION_VALUES,
+    TRADE_CANDIDATE_REVIEW_HEADERS,
     generate_excel_report,
 )
 
@@ -309,6 +311,45 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert workbook["Trade Candidates"]["E2"].value is not None
     assert workbook["Trade Candidates"].auto_filter.ref is not None
     assert workbook["Trade Candidates"].freeze_panes == "A2"
+    trade_candidate_headers = [
+        cell.value for cell in workbook["Trade Candidates"][1]
+    ]
+    assert trade_candidate_headers[-len(TRADE_CANDIDATE_REVIEW_HEADERS) :] == (
+        TRADE_CANDIDATE_REVIEW_HEADERS
+    )
+    assert "Review decision" in trade_candidate_headers
+    assert "Planned stop" in trade_candidate_headers
+    assert "Position size" in trade_candidate_headers
+
+
+def test_trade_candidates_sheet_has_review_decision_values(
+    tmp_path: Path,
+) -> None:
+    """Trade Candidates should offer suggested daily review decisions."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "excel"
+
+    try:
+        insert_report_data(connection)
+        output_path = generate_excel_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path)
+    sheet = workbook["Trade Candidates"]
+    validations = list(sheet.data_validations.dataValidation)
+    validation_text = "\n".join(
+        str(validation.formula1) for validation in validations
+    )
+
+    for decision in REVIEW_DECISION_VALUES:
+        assert decision in validation_text
+
+    assert validations
 
 
 def test_position_sizing_sheet_has_expected_labels_and_formulas(
@@ -380,7 +421,7 @@ def test_trade_journal_sheet_has_expected_columns(tmp_path: Path) -> None:
         "Result",
         "Notes",
     ]
-    assert sheet["F2"].value == "Watch | Paper trade | Trade | Ignore"
+    assert sheet["F2"].value == "Watch | Paper trade | Trade | Ignore | Already held"
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref is not None
 
