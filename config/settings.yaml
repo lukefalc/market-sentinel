@@ -6,6 +6,7 @@ database_path: ~/Library/CloudStorage/OneDrive-Personal/Finance/MarketSentinel/D
 report_output_dir: reports
 price_download_batch_size: 20
 price_backfill_period: 5y
+historical_backfill_years: 2
 price_daily_lookback_days: 10
 price_update_overlap_days: 5
 skip_price_update_if_latest_date_is_today: true

@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+from scripts import backfill_market_data
 from market_sentinel.data.price_loader import (
     backfill_daily_prices,
     update_daily_prices,
@@ -420,6 +421,8 @@ def test_backfill_daily_prices_uses_backfill_period(
     assert summary["tickers_checked"] == 1
     assert batch_calls[0]["start_date"] is None
     assert batch_calls[0]["period"] == "5y"
+    assert summary["tickers_backfilled"] == 1
+    assert summary["tickers_with_sufficient_history"] == 0
 
 
 def test_backfill_daily_prices_can_filter_one_market(
@@ -460,7 +463,79 @@ def test_backfill_daily_prices_can_filter_one_market(
 
     assert summary["market"] == "FTSE 350"
     assert summary["tickers_checked"] == 1
+    assert summary["tickers_backfilled"] == 1
     assert batch_calls == [["HSBA.L"]]
+
+
+def test_backfill_daily_prices_counts_sufficient_existing_history(
+    tmp_path: Path,
+) -> None:
+    """Backfill summary should show tickers that already have enough history."""
+    connection = open_test_database(tmp_path)
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "HSBA.L")
+        connection.execute(
+            "UPDATE securities SET market = 'FTSE 350' WHERE ticker = 'HSBA.L'"
+        )
+        connection.execute(
+            """
+            INSERT INTO daily_prices (
+                price_id,
+                security_id,
+                price_date,
+                close_price
+            )
+            VALUES
+                (1, 1, '2024-01-02', 100.0),
+                (2, 1, '2026-01-03', 120.0)
+            """
+        )
+
+        summary = backfill_daily_prices(
+            connection,
+            batch_downloader=fake_batch_downloader,
+            batch_size=50,
+            pause_seconds=0,
+            backfill_period="2y",
+            required_history_days=365,
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+            market="FTSE 350",
+        )
+    finally:
+        connection.close()
+
+    assert summary["tickers_checked"] == 1
+    assert summary["tickers_with_sufficient_history"] == 1
+    assert summary["tickers_backfilled"] == 1
+
+
+def test_backfill_settings_default_to_two_year_historical_period(monkeypatch) -> None:
+    """The dedicated historical backfill command should default to at least 2y."""
+
+    def fake_load_named_config(name):
+        return {
+            "price_download_batch_size": 10,
+            "historical_backfill_years": 2,
+            "price_download_pause_seconds": 0,
+        }
+
+    monkeypatch.setattr(backfill_market_data, "load_named_config", fake_load_named_config)
+
+    batch_size, backfill_period, pause_seconds, historical_years = (
+        backfill_market_data.load_backfill_settings()
+    )
+
+    assert batch_size == 10
+    assert backfill_period == "2y"
+    assert pause_seconds == 0
+    assert historical_years == 2
 
 
 def test_update_daily_prices_retries_failed_tickers_in_smaller_groups(

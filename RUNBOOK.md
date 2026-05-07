@@ -180,6 +180,12 @@ downloads a larger historical period and can take much longer:
 PYTHONPATH=src python3 scripts/backfill_market_data.py
 ```
 
+To backfill FTSE 350 only, use the dedicated market filter:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_market_data.py --market "FTSE 350"
+```
+
 The fast daily process uses incremental mode only. It does not run the slower
 backfill and does not update dividend history unless explicitly enabled.
 
@@ -189,8 +195,8 @@ project handle large universes like the S&P 500 without looking stuck.
 By default, each batch has 20 tickers, incremental mode overlaps the latest
 stored price date by 5 days, tickers are considered current when their latest
 stored price date is today, the latest expected market date, or within a small
-3-day stale threshold, backfill mode downloads 5 years, and the project pauses
-3 seconds between batches.
+3-day stale threshold, historical backfill mode downloads at least 2 years, and
+the project pauses 3 seconds between batches.
 
 Failed price updates are saved here:
 
@@ -203,6 +209,7 @@ To change this, edit `config/settings.yaml`:
 ```yaml
 price_download_batch_size: 20
 price_backfill_period: 5y
+historical_backfill_years: 2
 price_daily_lookback_days: 10
 price_update_overlap_days: 5
 skip_price_update_if_latest_date_is_today: true
@@ -296,10 +303,18 @@ PYTHONPATH=src python3 scripts/run_daily_process.py
 
 This only updates the universe CSV files. It does not download prices by itself.
 
-To backfill historical prices for FTSE 350 only after loading the universe:
+To prepare FTSE 350 after loading the universe, run this one-off historical
+sequence:
 
 ```bash
+PYTHONPATH=src python3 scripts/update_ftse350_universe.py
+PYTHONPATH=src python3 scripts/load_universe.py
 PYTHONPATH=src python3 scripts/backfill_market_data.py --market "FTSE 350"
+PYTHONPATH=src python3 scripts/backfill_moving_averages.py
+PYTHONPATH=src python3 scripts/detect_crossovers.py
+PYTHONPATH=src python3 scripts/generate_charts.py --force
+PYTHONPATH=src python3 scripts/generate_pdf_report.py
+PYTHONPATH=src python3 scripts/generate_excel_report.py
 ```
 
 ## Where The Database Is Saved

@@ -27,6 +27,7 @@ DEFAULT_PRICE_UPDATE_STALE_AFTER_DAYS = 3
 DEFAULT_PRICE_DOWNLOAD_LOOKBACK_DAYS = DEFAULT_PRICE_DAILY_LOOKBACK_DAYS
 DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS = 3.0
 DEFAULT_PRICE_BACKFILL_PERIOD = "5y"
+DEFAULT_HISTORICAL_BACKFILL_YEARS = 2
 DEFAULT_PRICE_RETRY_BATCH_SIZE = 5
 DEFAULT_FAILED_PRICE_UPDATES_PATH = Path("outputs") / "failed_price_updates.csv"
 DEFAULT_BATCH_SIZE = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE
@@ -535,13 +536,35 @@ def backfill_daily_prices(
     connection: duckdb.DuckDBPyConnection,
     batch_size: int = DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
+    required_history_days: int = DEFAULT_HISTORICAL_BACKFILL_YEARS * 365,
     pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     batch_downloader: Optional[BatchDownloader] = None,
     failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
     market: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the larger historical price backfill mode."""
-    return update_daily_prices(
+    securities = get_active_securities(connection, market=market)
+    sufficient_history_count = sum(
+        1
+        for security in securities
+        if _has_sufficient_price_history(
+            connection,
+            security["security_id"],
+            required_history_days,
+        )
+    )
+
+    print(
+        "Historical backfill target: "
+        f"{len(securities)} ticker(s)"
+        + (f" in {market}" if market else "")
+    )
+    print(
+        "Tickers already holding sufficient history: "
+        f"{sufficient_history_count}"
+    )
+
+    summary = update_daily_prices(
         connection,
         batch_size=batch_size,
         pause_seconds=pause_seconds,
@@ -551,6 +574,49 @@ def backfill_daily_prices(
         failed_log_path=failed_log_path,
         market=market,
     )
+    summary["tickers_with_sufficient_history"] = sufficient_history_count
+    summary["tickers_backfilled"] = (
+        summary["tickers_checked"] - len(summary["failed_tickers"])
+    )
+
+    print("Historical backfill summary")
+    print(f"Tickers checked: {summary['tickers_checked']}")
+    print(
+        "Tickers with sufficient history before backfill: "
+        f"{summary['tickers_with_sufficient_history']}"
+    )
+    print(f"Tickers backfilled: {summary['tickers_backfilled']}")
+    print(f"Tickers failed: {len(summary['failed_tickers'])}")
+    return summary
+
+
+def _has_sufficient_price_history(
+    connection: duckdb.DuckDBPyConnection,
+    security_id: int,
+    required_history_days: int,
+) -> bool:
+    """Return whether a ticker already has enough stored price history."""
+    if required_history_days <= 0:
+        return True
+
+    row = connection.execute(
+        """
+        SELECT MIN(price_date), MAX(price_date)
+        FROM daily_prices
+        WHERE security_id = ?
+        """,
+        [security_id],
+    ).fetchone()
+
+    if row is None or row[0] is None or row[1] is None:
+        return False
+
+    first_date = _to_date(row[0])
+    latest_date = _to_date(row[1])
+    if first_date is None or latest_date is None:
+        return False
+
+    return (latest_date - first_date).days >= required_history_days
 
 
 def _update_batch_with_single_ticker_downloader(
@@ -742,6 +808,11 @@ def _latest_price_date(
         [security_id],
     ).fetchone()[0]
 
+    return _to_date(value)
+
+
+def _to_date(value: Any) -> Optional[date]:
+    """Convert DuckDB date-like values to a date."""
     if value is None:
         return None
 

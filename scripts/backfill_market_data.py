@@ -22,7 +22,7 @@ if str(SRC_DIR) not in sys.path:
 
 from market_sentinel.config.loader import load_named_config  # noqa: E402
 from market_sentinel.data.price_loader import (  # noqa: E402
-    DEFAULT_PRICE_BACKFILL_PERIOD,
+    DEFAULT_HISTORICAL_BACKFILL_YEARS,
     DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
     DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     backfill_daily_prices,
@@ -39,11 +39,17 @@ def main(argv: Optional[list] = None) -> None:
     try:
         connection = open_duckdb_connection()
         initialise_database_schema(connection)
-        batch_size, backfill_period, pause_seconds = load_backfill_settings()
+        (
+            batch_size,
+            backfill_period,
+            pause_seconds,
+            historical_backfill_years,
+        ) = load_backfill_settings()
         summary = backfill_daily_prices(
             connection,
             batch_size=batch_size,
             backfill_period=backfill_period,
+            required_history_days=historical_backfill_years * 365,
             pause_seconds=pause_seconds,
             market=args.market,
         )
@@ -58,6 +64,12 @@ def main(argv: Optional[list] = None) -> None:
     if summary.get("market"):
         print(f"Market filter: {summary['market']}")
     print(f"Wrote {summary['price_rows_written']} daily price rows")
+    print(
+        "Tickers with sufficient history before backfill: "
+        f"{summary.get('tickers_with_sufficient_history', 0)}"
+    )
+    print(f"Tickers backfilled: {summary.get('tickers_backfilled', 0)}")
+    print(f"Tickers failed: {len(summary['failed_tickers'])}")
 
     if summary["failed_tickers"]:
         print("Some tickers could not be backfilled:")
@@ -76,9 +88,15 @@ def load_backfill_settings():
                 DEFAULT_PRICE_DOWNLOAD_BATCH_SIZE,
             )
         )
-        backfill_period = str(
-            settings.get("price_backfill_period", DEFAULT_PRICE_BACKFILL_PERIOD)
+        historical_backfill_years = int(
+            settings.get(
+                "historical_backfill_years",
+                DEFAULT_HISTORICAL_BACKFILL_YEARS,
+            )
         )
+        if historical_backfill_years < DEFAULT_HISTORICAL_BACKFILL_YEARS:
+            historical_backfill_years = DEFAULT_HISTORICAL_BACKFILL_YEARS
+        backfill_period = f"{historical_backfill_years}y"
         pause_seconds = float(
             settings.get(
                 "price_download_pause_seconds",
@@ -88,11 +106,11 @@ def load_backfill_settings():
     except (TypeError, ValueError) as error:
         raise ValueError(
             "Market data backfill settings must use a number for "
-            "price_download_batch_size, text like 5y for price_backfill_period, "
-            "and a number for price_download_pause_seconds."
+            "price_download_batch_size, historical_backfill_years, "
+            "and price_download_pause_seconds."
         ) from error
 
-    return batch_size, backfill_period, pause_seconds
+    return batch_size, backfill_period, pause_seconds, historical_backfill_years
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
