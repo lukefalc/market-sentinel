@@ -27,6 +27,9 @@ LANDSCAPE_PAGE_SIZE = landscape(A4)
 PDF_CHART_WIDTH = 770
 PDF_CHART_HEIGHT = 350
 DEFAULT_PDF_INCLUDE_SETUP_GRADES = ["Strong Buy Setup", "Strong Sell Setup"]
+DEFAULT_PDF_MAX_CHARTS_TOTAL = 50
+DEFAULT_PDF_MAX_CHARTS_PER_MARKET = 25
+PDF_MARKET_ORDER = ["S&P 500", "FTSE 350"]
 NO_STRONG_SETUPS_MESSAGE = (
     "No strong buy or strong sell setups were found for this report period."
 )
@@ -141,8 +144,30 @@ def _index_page_flowables(
         Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
         Spacer(1, 8),
         Paragraph(summary_text, styles["Normal"]),
+        *(_market_count_flowables(chart_details, styles) if detail_count else []),
         Spacer(1, 12),
         _index_tables(chart_details),
+    ]
+
+
+def _market_count_flowables(chart_details: Sequence[Dict[str, Any]], styles) -> List[Any]:
+    """Return a compact market count summary for the PDF index."""
+    counts: Dict[str, int] = {}
+
+    for chart_detail in chart_details:
+        market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
+        counts[market] = counts.get(market, 0) + 1
+
+    ordered_markets = [
+        market for market in PDF_MARKET_ORDER if market in counts
+    ] + sorted(market for market in counts if market not in PDF_MARKET_ORDER)
+    summary = "Included: " + " | ".join(
+        f"{market}: {counts[market]}" for market in ordered_markets
+    )
+
+    return [
+        Spacer(1, 4),
+        Paragraph(summary, styles["Normal"]),
     ]
 
 
@@ -428,14 +453,20 @@ def _candidate_action_grade(chart_detail: Dict[str, Any]) -> str:
 def _sorted_chart_details(
     chart_details: Sequence[Dict[str, Any]],
     include_grades: Optional[Sequence[str]] = None,
+    max_total: int = DEFAULT_PDF_MAX_CHARTS_TOTAL,
+    max_per_market: int = DEFAULT_PDF_MAX_CHARTS_PER_MARKET,
 ) -> List[Dict[str, Any]]:
-    """Return chart details in the requested PDF page order."""
+    """Return chart details in the market-balanced PDF page order."""
     filtered_details = [
         chart_detail
         for chart_detail in chart_details
         if _candidate_action_grade(chart_detail) in _include_setup_grades(include_grades)
     ]
-    return sorted(filtered_details, key=_chart_detail_sort_key)
+    return _market_balanced_chart_details(
+        filtered_details,
+        max_total=max_total,
+        max_per_market=max_per_market,
+    )
 
 
 def _included_chart_details(
@@ -446,6 +477,16 @@ def _included_chart_details(
     return _sorted_chart_details(
         chart_details,
         include_grades=_pdf_include_setup_grades(settings),
+        max_total=_positive_int_setting(
+            settings,
+            "pdf_max_charts_total",
+            DEFAULT_PDF_MAX_CHARTS_TOTAL,
+        ),
+        max_per_market=_positive_int_setting(
+            settings,
+            "pdf_max_charts_per_market",
+            DEFAULT_PDF_MAX_CHARTS_PER_MARKET,
+        ),
     )
 
 
@@ -466,11 +507,76 @@ def _include_setup_grades(raw_grades: Optional[Sequence[str]]) -> List[str]:
     return grades or DEFAULT_PDF_INCLUDE_SETUP_GRADES
 
 
-def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
-    """Sort chart pages by setup grade, recency, score, then ticker."""
+def _positive_int_setting(
+    settings: Dict[str, Any],
+    setting_name: str,
+    default_value: int,
+) -> int:
+    """Read a positive integer setting with a safe fallback."""
+    raw_value = settings.get(setting_name, default_value)
+
+    try:
+        parsed_value = int(raw_value)
+    except (TypeError, ValueError):
+        return default_value
+
+    if parsed_value < 1:
+        return default_value
+
+    return parsed_value
+
+
+def _market_balanced_chart_details(
+    chart_details: Sequence[Dict[str, Any]],
+    max_total: int,
+    max_per_market: int,
+) -> List[Dict[str, Any]]:
+    """Select strong setup charts with a fair market split and spillover."""
+    if not chart_details:
+        return []
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for chart_detail in chart_details:
+        market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
+        grouped.setdefault(market, []).append(chart_detail)
+
+    for market_details in grouped.values():
+        market_details.sort(key=_market_candidate_sort_key)
+
+    selected_by_market: Dict[str, List[Dict[str, Any]]] = {}
+    leftovers: List[Dict[str, Any]] = []
+
+    for market, market_details in grouped.items():
+        selected_by_market[market] = market_details[:max_per_market]
+        leftovers.extend(market_details[max_per_market:])
+
+    selected_count = sum(len(details) for details in selected_by_market.values())
+    remaining_slots = max(0, max_total - selected_count)
+
+    if remaining_slots:
+        leftovers.sort(key=_market_candidate_sort_key)
+        for chart_detail in leftovers[:remaining_slots]:
+            market = _market_marker(
+                chart_detail.get("market"),
+                chart_detail.get("ticker", ""),
+            )
+            selected_by_market.setdefault(market, []).append(chart_detail)
+
+    for market_details in selected_by_market.values():
+        market_details.sort(key=_market_candidate_sort_key)
+
+    ordered_markets = sorted(selected_by_market, key=_market_sort_key)
+    selected: List[Dict[str, Any]] = []
+    for market in ordered_markets:
+        selected.extend(selected_by_market[market])
+
+    return selected[:max_total]
+
+
+def _market_candidate_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort candidates within one market for PDF selection."""
     candidate = chart_detail.get("trade_candidate") or {}
-    first_signal = (chart_detail.get("signals") or [{}])[0]
-    crossover_date = first_signal.get("crossover_date")
+    crossover_date = _chart_crossover_date(chart_detail)
 
     if hasattr(crossover_date, "toordinal"):
         crossover_ordinal = crossover_date.toordinal()
@@ -478,23 +584,55 @@ def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
         crossover_ordinal = 0
 
     return (
-        _grade_sort_rank(candidate.get("action_grade")),
+        -_score_value(candidate.get("score")),
+        _strong_grade_sort_rank(candidate.get("action_grade")),
         -crossover_ordinal,
-        -(candidate.get("score") or 0),
         chart_detail.get("ticker", ""),
     )
 
 
-def _grade_sort_rank(action_grade: Any) -> int:
-    """Return the requested PDF sort rank for a setup grade."""
+def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Return the current PDF chart sort key for compatibility."""
+    market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
+    return (
+        _market_sort_key(market),
+        *_market_candidate_sort_key(chart_detail),
+    )
+
+
+def _strong_grade_sort_rank(action_grade: Any) -> int:
+    """Sort strong buy before strong sell when scores are equal."""
     ranks = {
         "Strong Buy Setup": 0,
         "Strong Sell Setup": 1,
-        "Buy Setup": 2,
-        "Track Only": 3,
-        "Sell Setup": 4,
     }
-    return ranks.get(str(action_grade), 3)
+    return ranks.get(str(action_grade), 2)
+
+
+def _market_sort_key(market: str) -> tuple:
+    """Return a deterministic market group order for PDF pages."""
+    try:
+        return (PDF_MARKET_ORDER.index(market), market)
+    except ValueError:
+        return (len(PDF_MARKET_ORDER), market)
+
+
+def _score_value(score: Any) -> float:
+    """Return a numeric score for sorting."""
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _chart_crossover_date(chart_detail: Dict[str, Any]) -> Any:
+    """Return the crossover date used for PDF sorting."""
+    candidate = chart_detail.get("trade_candidate") or {}
+    if candidate.get("crossover_date"):
+        return candidate.get("crossover_date")
+
+    first_signal = (chart_detail.get("signals") or [{}])[0]
+    return first_signal.get("crossover_date")
 
 
 def _signal_summary(candidate: Dict[str, Any]) -> str:

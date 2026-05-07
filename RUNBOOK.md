@@ -385,6 +385,8 @@ candidate_include_20_day_extreme_stop: true
 candidate_include_trailing_reference: true
 candidate_grade_stop_distance_warning_percent: 12
 candidate_recent_strong_days: 2
+pdf_max_charts_total: 50
+pdf_max_charts_per_market: 25
 pdf_include_setup_grades:
   - Strong Buy Setup
   - Strong Sell Setup
@@ -416,9 +418,13 @@ By default, the PDF shows only `Strong Buy Setup` and `Strong Sell Setup`
 candidates. `Buy Setup`, `Sell Setup`, and `Track Only` candidates are not shown
 in the PDF, although the underlying candidate grading can still calculate them.
 
-PDF chart pages are sorted by strong buy setups first, strong sell setups
-second, then by most recent crossover, higher score, and ticker. The first-page
-index includes only the stocks that have chart pages in the PDF.
+PDF chart selection is market balanced. By default, the report includes up to
+25 `S&P 500` candidates and up to 25 `FTSE 350` candidates, with unused slots
+available to the other market up to the 50-chart PDF maximum. Within each
+market, selected charts are sorted by higher score, strong buy before strong
+sell when scores tie, most recent crossover, and ticker. The first-page index
+includes only the stocks that have chart pages in the PDF and shows a compact
+included count by market.
 
 Supporting chart images are saved here:
 

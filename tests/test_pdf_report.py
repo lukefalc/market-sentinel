@@ -576,7 +576,7 @@ def test_pdf_index_uses_same_order_as_chart_pages(tmp_path: Path) -> None:
 
 
 def test_pdf_pages_sort_by_action_grade(tmp_path: Path) -> None:
-    """PDF chart pages should include only strong grades in requested order."""
+    """PDF chart pages should include only strong grades in market sort order."""
     chart_details = [
         sample_chart_detail(
             "SELL",
@@ -618,8 +618,8 @@ def test_pdf_pages_sort_by_action_grade(tmp_path: Path) -> None:
     sorted_details = _sorted_chart_details(chart_details)
 
     assert [detail["ticker"] for detail in sorted_details] == [
-        "STRB",
         "STRS",
+        "STRB",
     ]
 
 
@@ -651,6 +651,147 @@ def test_pdf_index_only_lists_included_grades(tmp_path: Path) -> None:
     assert [row[0] for row in rows] == ["STRB", "STRS"]
     assert {row[2] for row in rows} == {"S&P 500"}
     assert {row[3] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
+
+
+def test_pdf_selection_limits_each_market_when_both_have_enough(
+    tmp_path: Path,
+) -> None:
+    """Balanced PDF selection should cap each major market when both qualify."""
+    chart_details = [
+        sample_chart_detail(
+            f"SP{index:02d}",
+            tmp_path / f"SP{index:02d}.png",
+            score=40 - index,
+            market="S&P 500",
+        )
+        for index in range(30)
+    ] + [
+        sample_chart_detail(
+            f"FT{index:02d}.L",
+            tmp_path / f"FT{index:02d}.png",
+            score=40 - index,
+            market="FTSE 350",
+        )
+        for index in range(30)
+    ]
+
+    included = _included_chart_details(
+        chart_details,
+        {
+            "pdf_max_charts_total": 50,
+            "pdf_max_charts_per_market": 25,
+        },
+    )
+
+    assert len(included) == 50
+    assert _market_counts(included) == {"S&P 500": 25, "FTSE 350": 25}
+
+
+def test_pdf_selection_allows_spillover_when_market_has_unused_slots(
+    tmp_path: Path,
+) -> None:
+    """One market can fill unused chart slots when the other has fewer names."""
+    chart_details = [
+        sample_chart_detail(
+            f"SP{index:02d}",
+            tmp_path / f"SP{index:02d}.png",
+            score=70 - index,
+            market="S&P 500",
+        )
+        for index in range(40)
+    ] + [
+        sample_chart_detail(
+            f"FT{index:02d}.L",
+            tmp_path / f"FT{index:02d}.png",
+            score=70 - index,
+            market="FTSE 350",
+        )
+        for index in range(10)
+    ]
+
+    included = _included_chart_details(
+        chart_details,
+        {
+            "pdf_max_charts_total": 50,
+            "pdf_max_charts_per_market": 25,
+        },
+    )
+
+    assert len(included) == 50
+    assert _market_counts(included) == {"S&P 500": 40, "FTSE 350": 10}
+
+
+def test_pdf_selection_sorts_by_score_within_market(tmp_path: Path) -> None:
+    """Within each market, higher scores should appear first."""
+    chart_details = [
+        sample_chart_detail("LOW", tmp_path / "LOW.png", score=7, market="S&P 500"),
+        sample_chart_detail("HIGH", tmp_path / "HIGH.png", score=9, market="S&P 500"),
+        sample_chart_detail("MID", tmp_path / "MID.png", score=8, market="S&P 500"),
+        sample_chart_detail("FTH.L", tmp_path / "FTH.png", score=9, market="FTSE 350"),
+        sample_chart_detail("FTL.L", tmp_path / "FTL.png", score=6, market="FTSE 350"),
+    ]
+
+    included = _included_chart_details(chart_details, {})
+
+    assert [detail["ticker"] for detail in included[:3]] == ["HIGH", "MID", "LOW"]
+    assert [detail["ticker"] for detail in included[3:]] == ["FTH.L", "FTL.L"]
+
+
+def test_pdf_selection_prefers_strong_buy_when_score_is_equal(
+    tmp_path: Path,
+) -> None:
+    """Strong buy should come before strong sell for equal-score market peers."""
+    chart_details = [
+        sample_chart_detail(
+            "SELL",
+            tmp_path / "SELL.png",
+            action_grade="Strong Sell Setup",
+            score=8,
+            market="S&P 500",
+        ),
+        sample_chart_detail(
+            "BUY",
+            tmp_path / "BUY.png",
+            action_grade="Strong Buy Setup",
+            score=8,
+            market="S&P 500",
+        ),
+    ]
+
+    included = _included_chart_details(chart_details, {})
+
+    assert [detail["ticker"] for detail in included] == ["BUY", "SELL"]
+
+
+def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
+    """The PDF index should show a compact count by market."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    chart_details = [
+        sample_chart_detail("AAA", tmp_path / "AAA.png", market="S&P 500"),
+        sample_chart_detail("BBB.L", tmp_path / "BBB.png", market="FTSE 350"),
+        sample_chart_detail("CCC.L", tmp_path / "CCC.png", market="FTSE 350"),
+    ]
+
+    flowables = _index_page_flowables(chart_details, date(2026, 5, 4), styles)
+
+    assert "Included: S&P 500: 1 | FTSE 350: 2" in _flowable_text(flowables)
+
+
+def test_pdf_index_order_matches_market_balanced_chart_page_order(
+    tmp_path: Path,
+) -> None:
+    """The first-page index should match the selected chart page order exactly."""
+    chart_details = [
+        sample_chart_detail("SPLOW", tmp_path / "SPLOW.png", score=7, market="S&P 500"),
+        sample_chart_detail("SPHIGH", tmp_path / "SPHIGH.png", score=9, market="S&P 500"),
+        sample_chart_detail("FTLOW.L", tmp_path / "FTLOW.png", score=6, market="FTSE 350"),
+        sample_chart_detail("FTHIGH.L", tmp_path / "FTHIGH.png", score=8, market="FTSE 350"),
+    ]
+    included = _included_chart_details(chart_details, {})
+    rows = _index_rows(included)
+
+    assert [row[0] for row in rows] == [detail["ticker"] for detail in included]
+    assert [row[0] for row in rows] == ["SPHIGH", "SPLOW", "FTHIGH.L", "FTLOW.L"]
 
 
 def test_pdf_empty_state_message_when_no_strong_setups(tmp_path: Path) -> None:
@@ -721,21 +862,22 @@ def sample_chart_detail(
     action_grade: str = "Strong Buy Setup",
     score: int = 8,
     crossover_date: date = date(2026, 5, 4),
+    market: str = "S&P 500",
 ):
     """Return one sample chart detail for PDF index tests."""
     return {
         "ticker": ticker,
         "company_name": f"{ticker} Example Holdings PLC",
-        "market": "S&P 500",
+        "market": market,
         "chart_path": chart_path,
         "trade_candidate": {
             "ticker": ticker,
             "company_name": f"{ticker} Example Holdings PLC",
-            "market": "S&P 500",
+            "market": market,
             "currency": "USD",
             "signal_direction": "Bullish",
             "signal_description": "7-day trend line crossed above 30-day trend line",
-            "crossover_date": date(2026, 5, 4),
+            "crossover_date": crossover_date,
             "days_since_crossover": "Today",
             "latest_close_price": 124.5,
             "review_levels": {
@@ -802,3 +944,12 @@ def _tiny_png_bytes() -> bytes:
 def _pdf_page_count(pdf_path: Path) -> int:
     """Count PDF page objects without adding a PDF parser dependency."""
     return len(re.findall(rb"/Type\s*/Page\b", pdf_path.read_bytes()))
+
+
+def _market_counts(chart_details):
+    """Return selected PDF chart counts by market."""
+    counts = {}
+    for detail in chart_details:
+        market = detail["market"]
+        counts[market] = counts.get(market, 0) + 1
+    return counts

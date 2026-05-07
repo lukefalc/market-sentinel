@@ -24,6 +24,8 @@ excel_moving_average_recent_days: 10
 crossover_recent_days: 7
 chart_lookback_days: 180
 chart_max_tickers: 50
+pdf_max_charts_total: 50
+pdf_max_charts_per_market: 25
 chart_show_close_price: true
 chart_close_price_style: dotted
 chart_close_price_color: black
