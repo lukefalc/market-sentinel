@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import duckdb
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
     Image,
     KeepTogether,
@@ -24,6 +24,8 @@ from market_sentinel.reports.charts import generate_charts
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pdf"
 LANDSCAPE_PAGE_SIZE = landscape(A4)
+PDF_CHART_WIDTH = 770
+PDF_CHART_HEIGHT = 350
 DEFAULT_PDF_INCLUDE_SETUP_GRADES = ["Strong Buy Setup", "Strong Sell Setup"]
 NO_STRONG_SETUPS_MESSAGE = (
     "No strong buy or strong sell setups were found for this report period."
@@ -168,8 +170,19 @@ def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
 
 def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
     """Return one compact index table for up to 25 stocks."""
-    headers = ["Ticker", "Name", "Action grade", "Direction", "Crossed", "Days"]
-    table = Table([headers] + list(rows), colWidths=[38, 100, 82, 48, 58, 44])
+    headers = [
+        "Ticker",
+        "Name",
+        "Market",
+        "Action grade",
+        "Direction",
+        "Crossed",
+        "Days",
+    ]
+    table = Table(
+        [headers] + list(rows),
+        colWidths=[36, 78, 54, 72, 44, 50, 36],
+    )
     table.setStyle(
         TableStyle(
             [
@@ -199,7 +212,11 @@ def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
         rows.append(
             [
                 chart_detail.get("ticker", ""),
-                _shorten_name(chart_detail.get("company_name", ""), max_length=20),
+                _shorten_name(chart_detail.get("company_name", ""), max_length=17),
+                _market_marker(
+                    chart_detail.get("market"),
+                    chart_detail.get("ticker", ""),
+                ),
                 _candidate_action_grade(chart_detail),
                 first_signal.get("direction", ""),
                 crossover_date,
@@ -236,8 +253,13 @@ def _chart_flowables(
         path = Path(chart_detail["chart_path"])
         chart_group = [
             Paragraph(_chart_title(chart_detail), styles["Heading2"]),
-            Image(str(path), width=760, height=315, kind="proportional"),
-            Spacer(1, 6),
+            Spacer(1, 2),
+            Image(
+                str(path),
+                width=PDF_CHART_WIDTH,
+                height=PDF_CHART_HEIGHT,
+            ),
+            Spacer(1, 3),
             _candidate_card_flowable(chart_detail, styles),
         ]
         flowables.append(KeepTogether(chart_group))
@@ -251,13 +273,15 @@ def _chart_title(chart_detail: Dict[str, Any]) -> str:
     """Return a clear chart page title."""
     ticker = chart_detail.get("ticker", "")
     company_name = chart_detail.get("company_name", "")
-    market = chart_detail.get("market", "")
+    market = _market_marker(chart_detail.get("market"), ticker)
+    action_grade = _candidate_action_grade(chart_detail)
     title = ticker
 
     if company_name:
-        title = f"{title} - {company_name}"
-    if market:
-        title = f"{title} ({market})"
+        title = f"{title} — {company_name}"
+    title = f"{title} — {market}"
+    if action_grade:
+        title = f"{title} — {action_grade}"
 
     return title
 
@@ -286,67 +310,67 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
     candidate = chart_detail.get("trade_candidate") or _candidate_from_chart_detail(
         chart_detail
     )
+    card_style = ParagraphStyle(
+        "CandidateCardCompact",
+        parent=styles["Normal"],
+        fontSize=7.1,
+        leading=8.0,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+    label_style = ParagraphStyle(
+        "CandidateCardLabel",
+        parent=card_style,
+        fontName="Helvetica-Bold",
+    )
     rows = [
         [
-            Paragraph("<b>Candidate review</b>", styles["Normal"]),
+            Paragraph("Setup", label_style),
             Paragraph(
-                "<b>Action grade: "
+                "Candidate review | <b>Action grade: "
                 f"{_not_available(candidate.get('action_grade'))}</b> | "
                 f"Score: {_not_available(candidate.get('score'))} / "
                 f"{_not_available(candidate.get('max_score', 10))} | "
+                f"Market: {_market_marker(candidate.get('market'), candidate.get('ticker', ''))} | "
                 "Rule-based setup grade only. These are not trading instructions.",
-                styles["Normal"],
+                card_style,
             ),
         ],
         [
-            Paragraph("<b>Why</b>", styles["Normal"]),
-            Paragraph(_grade_reasons_text(candidate), styles["Normal"]),
-        ],
-        [
-            Paragraph("<b>Caution</b>", styles["Normal"]),
-            Paragraph(_grade_cautions_text(candidate), styles["Normal"]),
-        ],
-        [
-            Paragraph("<b>Ticker</b>", styles["Normal"]),
+            Paragraph("Signal", label_style),
             Paragraph(
-                " | ".join(
-                    [
-                        _not_available(candidate.get("ticker")),
-                        _not_available(candidate.get("company_name")),
-                        _not_available(candidate.get("market")),
-                    ]
-                ),
-                styles["Normal"],
+                _signal_summary(candidate),
+                card_style,
             ),
         ],
         [
-            Paragraph("<b>Signal</b>", styles["Normal"]),
-            Paragraph(_signal_summary(candidate), styles["Normal"]),
+            Paragraph("Why", label_style),
+            Paragraph(f"Why: {_grade_reasons_text(candidate)}", card_style),
         ],
         [
-            Paragraph("<b>Selected because</b>", styles["Normal"]),
-            Paragraph(_selection_reason_text(chart_detail), styles["Normal"]),
-        ],
-        [
-            Paragraph("<b>Latest close</b>", styles["Normal"]),
+            Paragraph("Caution", label_style),
             Paragraph(
-                _format_price(
+                f"Caution: {_grade_cautions_text(candidate)}",
+                card_style,
+            ),
+        ],
+        [
+            Paragraph("Planning", label_style),
+            Paragraph(
+                "Latest close: "
+                + _format_price(
                     candidate.get("latest_close_price"),
                     candidate.get("currency"),
-                ),
-                styles["Normal"],
+                )
+                + " | Planning reference levels: "
+                + _review_levels_text(candidate)
+                + " | Key risk note: "
+                + _key_risk_note_text(candidate),
+                card_style,
             ),
         ],
-        [
-            Paragraph("<b>Suggested review levels</b>", styles["Normal"]),
-            Paragraph(_review_levels_text(candidate), styles["Normal"]),
-        ],
-        [
-            Paragraph("<b>Risk notes</b>", styles["Normal"]),
-            Paragraph(_risk_notes_text(candidate), styles["Normal"]),
-        ],
     ]
-    table = Table(rows, colWidths=[132, 608])
+    table = Table(rows, colWidths=[86, 664], splitByRow=0)
     table.setStyle(
         TableStyle(
             [
@@ -354,12 +378,12 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#AAB7C4")),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D7DEE6")),
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7.4),
+                ("FONTSIZE", (0, 0), (-1, -1), 7.1),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
@@ -372,7 +396,10 @@ def _candidate_from_chart_detail(chart_detail: Dict[str, Any]) -> Dict[str, Any]
     return {
         "ticker": chart_detail.get("ticker", ""),
         "company_name": chart_detail.get("company_name", ""),
-        "market": chart_detail.get("market", ""),
+        "market": _market_marker(
+            chart_detail.get("market"),
+            chart_detail.get("ticker", ""),
+        ),
         "currency": chart_detail.get("currency", ""),
         "signal_direction": first_signal.get("direction", ""),
         "signal_description": first_signal.get("trend_description", "Not available"),
@@ -504,7 +531,7 @@ def _grade_reasons_text(candidate: Dict[str, Any]) -> str:
     if not reasons:
         return "Not available"
 
-    return " | ".join(str(reason) for reason in reasons[:3])
+    return "; ".join(_compact_sentence(reason) for reason in reasons[:3])
 
 
 def _grade_cautions_text(candidate: Dict[str, Any]) -> str:
@@ -514,7 +541,7 @@ def _grade_cautions_text(candidate: Dict[str, Any]) -> str:
     if not cautions:
         return "No major rule-based cautions."
 
-    return " | ".join(str(caution) for caution in cautions[:3])
+    return "; ".join(_compact_sentence(caution) for caution in cautions[:2])
 
 
 def _risk_notes_text(candidate: Dict[str, Any]) -> str:
@@ -525,6 +552,22 @@ def _risk_notes_text(candidate: Dict[str, Any]) -> str:
         return "Not available"
 
     return " | ".join(str(note) for note in risk_notes)
+
+
+def _key_risk_note_text(candidate: Dict[str, Any]) -> str:
+    """Return one compact risk note for the one-page PDF card."""
+    risk_notes = candidate.get("risk_notes") or []
+
+    if not risk_notes:
+        return "Not available"
+
+    return _compact_sentence(risk_notes[0])
+
+
+def _compact_sentence(value: Any) -> str:
+    """Return short sentence-like text for compact PDF cards."""
+    text = str(value).strip()
+    return text[:-1] if text.endswith(".") else text
 
 
 def _format_price(value: Any, currency: Optional[str] = None) -> str:
@@ -549,3 +592,17 @@ def _not_available(value: Any) -> str:
         return "Not available"
 
     return str(value)
+
+
+def _market_marker(market: Any, ticker: str = "") -> str:
+    """Return a readable market marker with a simple ticker fallback."""
+    if market is not None and str(market).strip():
+        return str(market).strip()
+
+    if str(ticker).upper().endswith(".L"):
+        return "FTSE 350"
+
+    if ticker:
+        return "S&P 500"
+
+    return "Market unknown"

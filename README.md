@@ -99,16 +99,17 @@ disabled, it prints a friendly message and does not send anything.
 Stock universe files live in:
 
 - `config/universes/ftse_350.csv`
-- `config/universes/ftse_100.csv`
 - `config/universes/sp_500.csv`
 
-The FTSE 100 and S&P 500 CSVs can be updated from Wikipedia. FTSE 250 and the
-full FTSE 350 CSV are not downloaded yet.
+The FTSE 350 and S&P 500 CSVs can be updated from Wikipedia. The FTSE 350
+updater builds the UK universe from the FTSE 100 and FTSE 250 constituent
+tables, then deduplicates tickers. FTSE 350 is the main UK universe;
+`ftse_100.csv` is superseded and is not loaded when `ftse_350.csv` exists.
 
-To refresh the FTSE 100 and S&P 500 universes:
+To refresh the FTSE 350 and S&P 500 universes:
 
 ```bash
-PYTHONPATH=src python3 scripts/update_ftse100_universe.py
+PYTHONPATH=src python3 scripts/update_ftse350_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
 ```
 
@@ -148,6 +149,12 @@ The historical backfill command is:
 PYTHONPATH=src python3 scripts/backfill_market_data.py
 ```
 
+To backfill FTSE 350 only after loading the universe:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_market_data.py --market "FTSE 350"
+```
+
 Both modes use yfinance batches so large universes, such as the S&P 500, show
 regular progress. The default batch size is 20 tickers, the daily lookback is
 10 days, the backfill period is 5 years, and the pause between batches is
@@ -168,8 +175,8 @@ price_daily_lookback_days: 10
 price_download_pause_seconds: 3
 ```
 
-For FTSE 350, update the CSV file manually when you want to add, remove, or
-correct stocks.
+For FTSE 350, prefer the updater script. You can still edit the CSV manually if
+you need to correct a ticker or sector.
 
 Keep this exact header row:
 
@@ -199,6 +206,7 @@ Tips for manual updates:
 
 - Use Yahoo Finance-style tickers where possible, such as `AAPL` or `HSBA.L`.
 - S&P 500 rows can be refreshed with `scripts/update_sp500_universe.py`.
+- FTSE 350 rows can be refreshed with `scripts/update_ftse350_universe.py`.
 - Keep FTSE 350 rows in `ftse_350.csv`.
 - If a company name contains a comma, wrap the name in quotes.
 - Save the file as plain CSV, not an Excel workbook.
@@ -206,7 +214,6 @@ Tips for manual updates:
 
 ## Current Status
 
-This repository now includes local universe loading, an S&P 500 universe
-updater, market data updates, analytics, risk flags, Excel/PDF reports, and
-optional email summaries. FTSE 350 constituent downloading is not implemented
-yet.
+This repository now includes local universe loading, S&P 500 and FTSE 350
+universe updaters, market data updates, analytics, risk flags, Excel/PDF reports, and
+optional email summaries.

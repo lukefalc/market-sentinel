@@ -18,6 +18,9 @@ SP500_WIKIPEDIA_URL = (
 FTSE100_WIKIPEDIA_URL = (
     "https://en.wikipedia.org/wiki/FTSE_100_Index"
 )
+FTSE250_WIKIPEDIA_URL = (
+    "https://en.wikipedia.org/wiki/FTSE_250_Index"
+)
 WIKIPEDIA_REQUEST_TIMEOUT_SECONDS = 20
 WIKIPEDIA_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -102,6 +105,54 @@ def update_ftse100_universe_csv(
     return csv_path
 
 
+def update_ftse350_universe_csv(
+    output_path: Optional[Path] = None,
+    ftse100_source_url: str = FTSE100_WIKIPEDIA_URL,
+    ftse250_source_url: str = FTSE250_WIKIPEDIA_URL,
+) -> Path:
+    """Build FTSE 350 from FTSE 100 plus FTSE 250 and save it as a CSV."""
+    csv_path = (
+        Path(output_path)
+        if output_path is not None
+        else Path("config") / "universes" / "ftse_350.csv"
+    )
+
+    ftse100_html = _download_page_html(ftse100_source_url, "FTSE 100")
+    ftse250_html = _download_page_html(ftse250_source_url, "FTSE 250")
+    ftse100_tables = _read_html_tables(ftse100_html, "FTSE 100")
+    ftse250_tables = _read_html_tables(ftse250_html, "FTSE 250")
+    ftse100_table = _find_ftse100_table(ftse100_tables)
+    ftse250_table = _find_ftse250_table(ftse250_tables)
+    ftse100_universe = _convert_ftse_table(ftse100_table, market_name="FTSE 350")
+    ftse250_universe = _convert_ftse_table(ftse250_table, market_name="FTSE 350")
+    combined_universe = pd.concat(
+        [ftse100_universe, ftse250_universe],
+        ignore_index=True,
+    )
+    universe = (
+        combined_universe.drop_duplicates(subset=["ticker"], keep="first")
+        .sort_values("ticker")
+        .reset_index(drop=True)
+    )
+    duplicate_rows_removed = len(combined_universe) - len(universe)
+
+    try:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        universe.to_csv(csv_path, index=False)
+    except OSError as error:
+        raise RuntimeError(
+            "Could not save the FTSE 350 universe CSV file. Check that the "
+            f"folder is writable: {csv_path.parent}"
+        ) from error
+
+    print(f"FTSE 100 rows found: {len(ftse100_universe)}")
+    print(f"FTSE 250 rows found: {len(ftse250_universe)}")
+    print(f"Combined rows written: {len(universe)}")
+    print(f"Duplicate rows removed: {duplicate_rows_removed}")
+
+    return csv_path
+
+
 def _download_page_html(source_url: str, universe_name: str = "S&P 500") -> str:
     """Download a webpage using a browser-style User-Agent header."""
     try:
@@ -126,6 +177,19 @@ def _download_page_html(source_url: str, universe_name: str = "S&P 500") -> str:
     return response.text
 
 
+def _read_html_tables(html_text: str, universe_name: str) -> List[pd.DataFrame]:
+    """Parse HTML tables with a clear error for the named universe."""
+    try:
+        return pd.read_html(html_text)
+    except (ImportError, ValueError, OSError) as error:
+        raise RuntimeError(
+            f"Could not read the {universe_name} constituents table from the "
+            "downloaded Wikipedia page. Check that pandas HTML support is "
+            "installed and that the Wikipedia page layout has not changed. "
+            f"Underlying error: {type(error).__name__}: {error}"
+        ) from error
+
+
 def _find_sp500_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
     """Find the Wikipedia table containing S&P 500 constituents."""
     required_source_columns = {"Symbol", "Security", "GICS Sector"}
@@ -142,15 +206,38 @@ def _find_sp500_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
 
 def _find_ftse100_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
     """Find the Wikipedia table containing FTSE 100 constituents."""
+    candidate_tables = []
     for table in tables:
-        columns = set(table.columns)
-        has_company = "Company" in columns or "Constituent" in columns
-        has_ticker = "Ticker" in columns or "EPIC" in columns
+        columns = {_normalise_column_name(column) for column in table.columns}
+        has_company = bool(columns & {"company", "constituent", "name"})
+        has_ticker = bool(columns & {"ticker", "epic"})
         if has_company and has_ticker:
-            return table
+            candidate_tables.append(_flatten_column_names(table))
+
+    if candidate_tables:
+        return max(candidate_tables, key=len)
 
     raise RuntimeError(
         "Could not find the FTSE 100 constituents table in the Wikipedia page. "
+        "The page layout may have changed."
+    )
+
+
+def _find_ftse250_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
+    """Find the Wikipedia table containing FTSE 250 constituents."""
+    candidate_tables = []
+    for table in tables:
+        columns = {_normalise_column_name(column) for column in table.columns}
+        has_company = bool(columns & {"company", "constituent", "name"})
+        has_ticker = bool(columns & {"ticker", "epic"})
+        if has_company and has_ticker:
+            candidate_tables.append(_flatten_column_names(table))
+
+    if candidate_tables:
+        return max(candidate_tables, key=len)
+
+    raise RuntimeError(
+        "Could not find the FTSE 250 constituents table in the Wikipedia page. "
         "The page layout may have changed."
     )
 
@@ -197,13 +284,21 @@ def _convert_sp500_table(table: pd.DataFrame) -> pd.DataFrame:
 
 def _convert_ftse100_table(table: pd.DataFrame) -> pd.DataFrame:
     """Convert the Wikipedia FTSE 100 table to the project CSV format."""
+    return _convert_ftse_table(table, market_name="FTSE 100")
+
+
+def _convert_ftse_table(table: pd.DataFrame, market_name: str) -> pd.DataFrame:
+    """Convert a Wikipedia FTSE table to the project CSV format."""
+    table = _flatten_column_names(table)
     ticker_column = _first_present_column(table, ["Ticker", "EPIC"])
-    name_column = _first_present_column(table, ["Company", "Constituent"])
+    name_column = _first_present_column(table, ["Company", "Constituent", "Name"])
     sector_column = _first_present_column(
         table,
         [
             "FTSE Industry Classification Benchmark sector",
+            "FTSE Russell Industry",
             "ICB Sector",
+            "Industry",
             "Sector",
         ],
         required=False,
@@ -211,8 +306,8 @@ def _convert_ftse100_table(table: pd.DataFrame) -> pd.DataFrame:
 
     if ticker_column is None or name_column is None:
         raise RuntimeError(
-            "The FTSE 100 table is missing expected ticker or company columns. "
-            "Wikipedia may have changed."
+            f"The {market_name} table is missing expected ticker or company "
+            "columns. Wikipedia may have changed."
         )
 
     if sector_column is None:
@@ -224,7 +319,7 @@ def _convert_ftse100_table(table: pd.DataFrame) -> pd.DataFrame:
         {
             "ticker": table[ticker_column].apply(_to_london_yfinance_ticker),
             "name": table[name_column].astype(str).str.strip(),
-            "market": "FTSE 100",
+            "market": market_name,
             "region": "UK",
             "currency": "GBP",
             "sector": sectors,
@@ -240,9 +335,10 @@ def _convert_ftse100_table(table: pd.DataFrame) -> pd.DataFrame:
 
     if universe.empty:
         raise RuntimeError(
-            "The FTSE 100 table was found, but no valid rows could be parsed."
+            f"The {market_name} table was found, but no valid rows could be parsed."
         )
 
+    universe = universe.drop_duplicates(subset=["ticker"], keep="first")
     return universe.sort_values("ticker").reset_index(drop=True)
 
 
@@ -252,9 +348,14 @@ def _first_present_column(
     required: bool = True,
 ) -> Optional[str]:
     """Return the first matching column name from a DataFrame."""
+    normalised_to_column = {
+        _normalise_column_name(column): column for column in table.columns
+    }
+
     for name in names:
-        if name in table.columns:
-            return name
+        exact_column = normalised_to_column.get(_normalise_column_name(name))
+        if exact_column is not None:
+            return exact_column
 
     if required:
         raise RuntimeError(
@@ -284,4 +385,23 @@ def _to_london_yfinance_ticker(ticker: object) -> str:
     if value.endswith(".L"):
         return value
 
-    return f"{value.replace('.', '-')}.L"
+    value = value.replace(".", "-").replace(" ", "")
+    return f"{value}.L"
+
+
+def _flatten_column_names(table: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with readable single-level column names."""
+    flattened = table.copy()
+
+    if getattr(flattened.columns, "nlevels", 1) > 1:
+        flattened.columns = [
+            " ".join(str(part) for part in column if str(part) != "nan").strip()
+            for column in flattened.columns
+        ]
+
+    return flattened
+
+
+def _normalise_column_name(column: object) -> str:
+    """Normalise source column names for loose matching."""
+    return " ".join(str(column).strip().lower().split())

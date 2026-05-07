@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from market_sentinel.data.universe_loader import load_universe_csv
+from market_sentinel.data.universe_loader import (
+    default_universe_files,
+    load_universe_csv,
+    load_universe_files,
+)
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 
@@ -164,3 +168,79 @@ def test_load_universe_csv_raises_clear_error_for_malformed_row(
             load_universe_csv(connection, csv_path)
     finally:
         connection.close()
+
+
+def test_default_universe_files_prefers_ftse350_over_ftse100(
+    tmp_path: Path,
+) -> None:
+    """The default load should avoid loading both UK universe files."""
+    universe_dir = tmp_path / "universes"
+    write_csv(
+        universe_dir / "sp_500.csv",
+        "ticker,name,market,region,currency,sector\n",
+    )
+    write_csv(
+        universe_dir / "ftse_100.csv",
+        "ticker,name,market,region,currency,sector\n",
+    )
+    write_csv(
+        universe_dir / "ftse_350.csv",
+        "ticker,name,market,region,currency,sector\n",
+    )
+
+    files = default_universe_files(universe_dir)
+
+    assert [path.name for path in files] == ["sp_500.csv", "ftse_350.csv"]
+
+
+def test_load_universe_files_avoids_duplicate_ftse100_and_ftse350(
+    tmp_path: Path,
+) -> None:
+    """Loading defaults should store UK overlap once as FTSE 350."""
+    universe_dir = tmp_path / "universes"
+    write_csv(
+        universe_dir / "sp_500.csv",
+        "\n".join(
+            [
+                "ticker,name,market,region,currency,sector",
+                "AAPL,Apple,S&P 500,US,USD,Technology",
+            ]
+        ),
+    )
+    write_csv(
+        universe_dir / "ftse_100.csv",
+        "\n".join(
+            [
+                "ticker,name,market,region,currency,sector",
+                "HSBA.L,HSBC Holdings,FTSE 100,UK,GBP,Banks",
+            ]
+        ),
+    )
+    write_csv(
+        universe_dir / "ftse_350.csv",
+        "\n".join(
+            [
+                "ticker,name,market,region,currency,sector",
+                "HSBA.L,HSBC Holdings,FTSE 350,UK,GBP,Banks",
+            ]
+        ),
+    )
+    connection = open_test_database(tmp_path)
+
+    try:
+        loaded_counts = load_universe_files(
+            connection,
+            default_universe_files(universe_dir),
+        )
+        saved_rows = connection.execute(
+            """
+            SELECT ticker, market
+            FROM securities
+            ORDER BY ticker
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert set(loaded_counts) == {"sp_500.csv", "ftse_350.csv"}
+    assert saved_rows == [("AAPL", "S&P 500"), ("HSBA.L", "FTSE 350")]

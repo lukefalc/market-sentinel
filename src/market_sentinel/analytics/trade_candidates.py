@@ -115,7 +115,7 @@ def build_trade_candidate(
     return {
         "ticker": security["ticker"],
         "company_name": security["company_name"],
-        "market": security["market"],
+        "market": _market_marker(security["market"], security["ticker"]),
         "currency": security["currency"],
         "signal_direction": direction,
         "signal_description": signal.get("trend_description") or "Not available",
@@ -158,9 +158,23 @@ def _fetch_security(
         "security_id": row[0],
         "ticker": row[1],
         "company_name": row[2] or "",
-        "market": row[3] or "",
+        "market": _market_marker(row[3], row[1]),
         "currency": row[4] or "",
     }
+
+
+def _market_marker(market: Any, ticker: str) -> str:
+    """Return a readable market marker with a simple ticker fallback."""
+    if market is not None and str(market).strip():
+        return str(market).strip()
+
+    if str(ticker).upper().endswith(".L"):
+        return "FTSE 350"
+
+    if ticker:
+        return "S&P 500"
+
+    return "Market unknown"
 
 
 def _fetch_recent_close_prices(

@@ -422,6 +422,47 @@ def test_backfill_daily_prices_uses_backfill_period(
     assert batch_calls[0]["period"] == "5y"
 
 
+def test_backfill_daily_prices_can_filter_one_market(
+    tmp_path: Path,
+) -> None:
+    """Backfill mode should support updating one market at a time."""
+    connection = open_test_database(tmp_path)
+    batch_calls = []
+
+    def fake_batch_downloader(tickers, start_date, end_date, period):
+        batch_calls.append(list(tickers))
+        return {
+            ticker: fake_downloader(ticker, start_date, end_date)
+            for ticker in tickers
+        }
+
+    try:
+        insert_security(connection, 1, "AAA")
+        insert_security(connection, 2, "HSBA.L")
+        connection.execute(
+            "UPDATE securities SET market = 'S&P 500' WHERE ticker = 'AAA'"
+        )
+        connection.execute(
+            "UPDATE securities SET market = 'FTSE 350' WHERE ticker = 'HSBA.L'"
+        )
+
+        summary = backfill_daily_prices(
+            connection,
+            batch_downloader=fake_batch_downloader,
+            batch_size=50,
+            pause_seconds=0,
+            backfill_period="5y",
+            failed_log_path=tmp_path / "failed_price_updates.csv",
+            market="FTSE 350",
+        )
+    finally:
+        connection.close()
+
+    assert summary["market"] == "FTSE 350"
+    assert summary["tickers_checked"] == 1
+    assert batch_calls == [["HSBA.L"]]
+
+
 def test_update_daily_prices_retries_failed_tickers_in_smaller_groups(
     tmp_path: Path,
 ) -> None:

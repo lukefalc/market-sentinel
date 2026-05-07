@@ -390,6 +390,7 @@ def test_generate_charts_sorts_and_deduplicates_crossover_tickers(
     assert summary["chart_details"][0]["signals"][0]["direction"] == "Bullish"
     assert summary["chart_details"][2]["signals"][0]["direction"] == "Bearish"
     assert summary["chart_details"][0]["trade_candidate"]["ticker"] == "AAA"
+    assert summary["chart_details"][0]["market"] == "S&P 500"
     assert (
         summary["chart_details"][0]["trade_candidate"]["review_levels"]["50-day SMA"]
         == 105.5
@@ -506,6 +507,7 @@ def test_generate_charts_uses_simple_defaults(
             "prices": [("2026-05-01", 100.0)],
             "moving_averages": {},
             "company_name": "Example A",
+            "market": "FTSE 350",
             "currency": "USD",
         }
 
@@ -546,6 +548,16 @@ def test_generate_charts_uses_simple_defaults(
     assert observed["close_price_style"] == "dotted"
     assert observed["close_price_color"] == "black"
     assert observed["close_price_linewidth"] == 1.0
+
+
+def test_chart_image_title_includes_market_marker() -> None:
+    """Generated chart titles should show the market/index marker."""
+    title = charts_module._chart_image_title(
+        "BARC.L",
+        {"company_name": "Barclays PLC", "market": "FTSE 350"},
+    )
+
+    assert title == "BARC.L — Barclays PLC — FTSE 350"
 
 
 def fake_chart_writer(

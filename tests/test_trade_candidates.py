@@ -141,6 +141,7 @@ def test_bullish_candidate_review_levels(tmp_path: Path) -> None:
         connection.close()
 
     assert candidate["latest_close_price"] == 119.0
+    assert candidate["market"] == "S&P 500"
     assert candidate["review_levels"]["50-day SMA"] == 110.0
     assert candidate["review_levels"]["20-day low"] == 100.0
     assert candidate["review_levels"]["20% trailing reference"] == 95.2

@@ -7,6 +7,8 @@ import pytest
 
 from market_sentinel.data import universe_sources
 from market_sentinel.data.universe_sources import (
+    _to_london_yfinance_ticker,
+    update_ftse350_universe_csv,
     update_ftse100_universe_csv,
     update_sp500_universe_csv,
 )
@@ -45,6 +47,21 @@ def fake_ftse100_table() -> pd.DataFrame:
                 "Banks",
                 "Telecommunications",
                 "Energy",
+            ],
+        }
+    )
+
+
+def fake_ftse250_table() -> pd.DataFrame:
+    """Return a small fake Wikipedia-style FTSE 250 table."""
+    return pd.DataFrame(
+        {
+            "Company": ["EasyJet", "Shell", "Games Workshop"],
+            "EPIC": ["EZJ", "SHEL.L", "GAW"],
+            "ICB Sector": [
+                "Travel and Leisure",
+                "Energy",
+                "Consumer Products",
             ],
         }
     )
@@ -142,6 +159,77 @@ def test_update_ftse100_universe_csv_writes_required_format(
     assert request_calls[0]["timeout"] > 0
 
 
+def test_update_ftse350_universe_csv_writes_required_format(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """The updater should combine FTSE 100 and FTSE 250 into FTSE 350."""
+    request_calls = []
+
+    def fake_get(source_url, headers, timeout):
+        request_calls.append(
+            {
+                "source_url": source_url,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        if "FTSE_100" in source_url:
+            return FakeResponse(text="<html>ftse 100 page</html>")
+        return FakeResponse(text="<html>ftse 250 page</html>")
+
+    def fake_read_html(html_text):
+        if html_text == "<html>ftse 100 page</html>":
+            return [fake_ftse100_table()]
+        if html_text == "<html>ftse 250 page</html>":
+            return [fake_ftse250_table()]
+        raise AssertionError(f"Unexpected HTML: {html_text}")
+
+    monkeypatch.setattr(universe_sources.requests, "get", fake_get)
+    monkeypatch.setattr(universe_sources.pd, "read_html", fake_read_html)
+
+    output_path = tmp_path / "universes" / "ftse_350.csv"
+    saved_path = update_ftse350_universe_csv(output_path)
+    saved_rows = pd.read_csv(saved_path)
+    captured = capsys.readouterr()
+
+    assert saved_path == output_path
+    assert list(saved_rows.columns) == [
+        "ticker",
+        "name",
+        "market",
+        "region",
+        "currency",
+        "sector",
+    ]
+    assert set(saved_rows["ticker"]) == {
+        "BT-A.L",
+        "EZJ.L",
+        "GAW.L",
+        "HSBA.L",
+        "SHEL.L",
+    }
+    assert set(saved_rows["market"]) == {"FTSE 350"}
+    assert set(saved_rows["region"]) == {"UK"}
+    assert set(saved_rows["currency"]) == {"GBP"}
+    assert "Banks" in set(saved_rows["sector"])
+    assert len(request_calls) == 2
+    assert all(call["headers"]["User-Agent"] for call in request_calls)
+    assert all(call["timeout"] > 0 for call in request_calls)
+    assert "FTSE 100 rows found: 3" in captured.out
+    assert "FTSE 250 rows found: 3" in captured.out
+    assert "Combined rows written: 5" in captured.out
+    assert "Duplicate rows removed: 1" in captured.out
+
+
+def test_london_ticker_conversion_handles_dots_and_existing_suffix() -> None:
+    """London tickers should be converted to yfinance-compatible symbols."""
+    assert _to_london_yfinance_ticker("HSBA") == "HSBA.L"
+    assert _to_london_yfinance_ticker("BT.A") == "BT-A.L"
+    assert _to_london_yfinance_ticker("shel.l") == "SHEL.L"
+
+
 def test_update_sp500_universe_csv_handles_parser_errors(
     tmp_path: Path,
     monkeypatch,
@@ -182,6 +270,29 @@ def test_update_ftse100_universe_csv_handles_missing_table(
 
     with pytest.raises(RuntimeError, match="Could not find"):
         update_ftse100_universe_csv(tmp_path / "ftse_100.csv")
+
+
+def test_update_ftse350_universe_csv_handles_missing_table(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A changed FTSE source layout should produce a clear parsing error."""
+
+    def fake_get(source_url, headers, timeout):
+        if "FTSE_100" in source_url:
+            return FakeResponse(text="<html>ftse 100 page</html>")
+        return FakeResponse(text="<html>ftse 250 page</html>")
+
+    def fake_read_html(html_text):
+        if html_text == "<html>ftse 100 page</html>":
+            return [fake_ftse100_table()]
+        return [pd.DataFrame({"Wrong": ["value"]})]
+
+    monkeypatch.setattr(universe_sources.requests, "get", fake_get)
+    monkeypatch.setattr(universe_sources.pd, "read_html", fake_read_html)
+
+    with pytest.raises(RuntimeError, match="Could not find the FTSE 250"):
+        update_ftse350_universe_csv(tmp_path / "ftse_350.csv")
 
 
 def test_update_sp500_universe_csv_handles_http_403(

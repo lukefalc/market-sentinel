@@ -30,6 +30,10 @@ def main() -> None:
         raise SystemExit(1) from error
 
     print(f"Updated FTSE 100 universe CSV: {saved_path}")
+    print(
+        "Note: FTSE 100 is superseded by FTSE 350 in the normal universe load "
+        "when config/universes/ftse_350.csv exists."
+    )
     print("Next step: load the universe with python3 scripts/load_universe.py")
 
 

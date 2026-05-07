@@ -162,6 +162,14 @@ def generate_charts(
         chart_details.append(
             {
                 **selection,
+                "company_name": chart_data.get(
+                    "company_name",
+                    selection.get("company_name", ""),
+                ),
+                "market": _market_marker(
+                    chart_data.get("market") or selection.get("market"),
+                    ticker,
+                ),
                 "chart_path": output_path,
                 "trade_candidate": trade_candidate,
             }
@@ -362,7 +370,7 @@ def _manual_chart_selections(
         {
             "ticker": ticker,
             "company_name": "",
-            "market": "",
+            "market": _market_marker("", ticker),
             "signals": [],
         }
         for ticker in _normalise_tickers(tickers)[:max_tickers]
@@ -505,12 +513,17 @@ def _fetch_chart_data(
             securities.security_id,
             securities.name,
             securities.currency,
+            securities.market,
             MAX(prices.price_date)
         FROM securities
         LEFT JOIN daily_prices AS prices
             ON securities.security_id = prices.security_id
         WHERE securities.ticker = ?
-        GROUP BY securities.security_id, securities.name, securities.currency
+        GROUP BY
+            securities.security_id,
+            securities.name,
+            securities.currency,
+            securities.market
         """,
         [ticker],
     ).fetchone()
@@ -521,9 +534,11 @@ def _fetch_chart_data(
             "moving_averages": {},
             "company_name": "",
             "currency": "",
+            "market": _market_marker("", ticker),
         }
 
-    security_id, company_name, currency, latest_price_date = security_row
+    security_id, company_name, currency, market, latest_price_date = security_row
+    market_marker = _market_marker(market, ticker)
     latest_date = _to_date(latest_price_date)
 
     if latest_date is None:
@@ -532,6 +547,7 @@ def _fetch_chart_data(
             "moving_averages": {},
             "company_name": company_name or "",
             "currency": currency or "",
+            "market": market_marker,
         }
 
     cutoff_date = latest_date - timedelta(days=lookback_days)
@@ -569,6 +585,7 @@ def _fetch_chart_data(
         "moving_averages": moving_averages,
         "company_name": company_name or "",
         "currency": currency or "",
+        "market": market_marker,
     }
 
 
@@ -625,12 +642,7 @@ def _write_chart_image(
             linewidth=1.2,
         )
 
-    company_name = chart_data.get("company_name")
-    title = f"{ticker} trend"
-    if company_name:
-        title = f"{ticker} - {company_name} trend"
-
-    ax.set_title(title)
+    ax.set_title(_chart_image_title(ticker, chart_data))
     ax.set_xlabel("Date")
     currency = chart_data.get("currency")
     y_axis_label = "Price"
@@ -658,6 +670,17 @@ def _matplotlib_line_style(style_name: str) -> str:
     return styles.get(style_name.strip().lower(), ":")
 
 
+def _chart_image_title(ticker: str, chart_data: Dict[str, Any]) -> str:
+    """Return the chart image title including the market marker."""
+    company_name = chart_data.get("company_name")
+    market = _market_marker(chart_data.get("market"), ticker)
+
+    if company_name:
+        return f"{ticker} — {company_name} — {market}"
+
+    return f"{ticker} — {market}"
+
+
 def _safe_filename(ticker: str) -> str:
     """Make a ticker safe for a simple PNG filename."""
     safe_characters = []
@@ -669,6 +692,20 @@ def _safe_filename(ticker: str) -> str:
             safe_characters.append("_")
 
     return "".join(safe_characters)
+
+
+def _market_marker(market: Any, ticker: str = "") -> str:
+    """Return a readable market marker with a simple ticker fallback."""
+    if market is not None and str(market).strip():
+        return str(market).strip()
+
+    if str(ticker).upper().endswith(".L"):
+        return "FTSE 350"
+
+    if ticker:
+        return "S&P 500"
+
+    return "Market unknown"
 
 
 def _to_date(value: Any) -> Optional[date]:

@@ -361,13 +361,31 @@ def _fetch_securities(
     """Fetch securities for the report."""
     headers = ["Ticker", "Name", "Market", "Region", "Currency", "Sector"]
     rows = connection.execute(
-        """
-        SELECT ticker, name, market, region, currency, sector
+        f"""
+        SELECT
+            ticker,
+            name,
+            {_market_expression("securities")} AS market,
+            region,
+            currency,
+            sector
         FROM securities
         ORDER BY ticker
         """
     ).fetchall()
     return headers, rows
+
+
+def _market_expression(alias: str = "securities") -> str:
+    """Return SQL that displays a readable market with a ticker fallback."""
+    return (
+        "CASE "
+        f"WHEN {alias}.market IS NOT NULL AND TRIM({alias}.market) <> '' "
+        f"THEN {alias}.market "
+        f"WHEN UPPER({alias}.ticker) LIKE '%.L' THEN 'FTSE 350' "
+        "ELSE 'S&P 500' "
+        "END"
+    )
 
 
 def _fetch_latest_prices(
@@ -376,6 +394,7 @@ def _fetch_latest_prices(
     """Fetch each security's latest daily price."""
     headers = [
         "Ticker",
+        "Market",
         "Price Date",
         "Open",
         "High",
@@ -385,9 +404,10 @@ def _fetch_latest_prices(
         "Volume",
     ]
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             latest_prices.price_date,
             latest_prices.open_price,
             latest_prices.high_price,
@@ -415,9 +435,9 @@ def _fetch_moving_averages(
     connection: duckdb.DuckDBPyConnection,
 ) -> Tuple[List[str], List[Sequence[Any]]]:
     """Fetch the latest SMA value for each ticker and moving-average period."""
-    headers = ["Ticker", "Signal Date", "Period Days", "SMA Value"]
+    headers = ["Ticker", "Market", "Signal Date", "Period Days", "SMA Value"]
     rows = connection.execute(
-        """
+        f"""
         WITH latest_signal_dates AS (
             SELECT
                 security_id,
@@ -429,6 +449,7 @@ def _fetch_moving_averages(
         )
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             signals.signal_date,
             signals.moving_average_period_days,
             signals.moving_average_value
@@ -452,7 +473,7 @@ def _fetch_recent_moving_averages(
     recent_days: int,
 ) -> Tuple[List[str], List[Sequence[Any]]]:
     """Fetch recent SMA history for quick checking without exporting all history."""
-    headers = ["Ticker", "Signal Date", "Period Days", "SMA Value"]
+    headers = ["Ticker", "Market", "Signal Date", "Period Days", "SMA Value"]
     latest_signal_date = _latest_signal_date(connection, "SMA")
 
     if latest_signal_date is None:
@@ -460,9 +481,10 @@ def _fetch_recent_moving_averages(
 
     cutoff_date = latest_signal_date - timedelta(days=recent_days - 1)
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             signals.signal_date,
             signals.moving_average_period_days,
             signals.moving_average_value
@@ -514,7 +536,7 @@ def _fetch_crossover_signals(
         SELECT
             securities.ticker,
             securities.name,
-            securities.market,
+            {_market_expression("securities")} AS market,
             signals.signal_date,
             signals.moving_average_period_days,
             signals.comparison_period_days,
@@ -554,6 +576,7 @@ def _fetch_dividend_metrics(
     """Fetch dividend metrics rows."""
     headers = [
         "Ticker",
+        "Market",
         "Metric Date",
         "Trailing 12M Dividend",
         "Dividend Yield",
@@ -562,9 +585,10 @@ def _fetch_dividend_metrics(
         "Risk Reason",
     ]
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             metrics.metric_date,
             metrics.trailing_annual_dividend,
             metrics.dividend_yield,
@@ -597,6 +621,7 @@ def _fetch_high_dividend_stocks(
     """Fetch dividend metrics sorted by yield descending."""
     headers = [
         "Ticker",
+        "Market",
         "Metric Date",
         "Dividend Yield",
         "Trailing 12M Dividend",
@@ -605,9 +630,10 @@ def _fetch_high_dividend_stocks(
         "Risk Reason",
     ]
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             metrics.metric_date,
             metrics.dividend_yield,
             metrics.trailing_annual_dividend,
@@ -630,15 +656,17 @@ def _fetch_dividend_risk_flags(
     """Fetch dividend risk flag rows."""
     headers = [
         "Ticker",
+        "Market",
         "Metric Date",
         "Dividend Yield",
         "Risk Flag",
         "Risk Reason",
     ]
     rows = connection.execute(
-        """
+        f"""
         SELECT
             securities.ticker,
+            {_market_expression("securities")} AS market,
             metrics.metric_date,
             metrics.dividend_yield,
             metrics.dividend_risk_flag,

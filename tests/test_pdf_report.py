@@ -3,12 +3,15 @@
 import base64
 from datetime import date
 from pathlib import Path
+import re
 
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 from market_sentinel.reports import pdf_report as pdf_report_module
 from market_sentinel.reports.pdf_report import (
     LANDSCAPE_PAGE_SIZE,
+    PDF_CHART_HEIGHT,
+    PDF_CHART_WIDTH,
     _candidate_card_flowable,
     _chart_flowables,
     _index_page_flowables,
@@ -338,6 +341,56 @@ def test_generate_pdf_report_can_include_chart_images(
     assert output_path.stat().st_size > 1000
 
 
+def test_pdf_keeps_each_selected_stock_to_one_page(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The index plus two selected stocks should produce exactly three pages."""
+    connection = open_test_database(tmp_path)
+    output_dir = tmp_path / "outputs" / "pdf"
+    chart_dir = tmp_path / "charts"
+    first_chart = chart_dir / "AAA_price_trend.png"
+    second_chart = chart_dir / "BBB_price_trend.png"
+    chart_dir.mkdir(parents=True, exist_ok=True)
+    first_chart.write_bytes(_tiny_png_bytes())
+    second_chart.write_bytes(_tiny_png_bytes())
+
+    def fake_generate_two_charts(connection_arg, config_dir=None):
+        return {
+            "tickers_checked": 2,
+            "charts_created": 2,
+            "chart_paths": [first_chart, second_chart],
+            "chart_details": [
+                sample_chart_detail("AAA", first_chart),
+                sample_chart_detail(
+                    "BBB",
+                    second_chart,
+                    action_grade="Strong Sell Setup",
+                    score=9,
+                ),
+            ],
+            "skipped": {},
+            "output_dir": chart_dir,
+        }
+
+    monkeypatch.setattr(
+        pdf_report_module,
+        "generate_charts",
+        fake_generate_two_charts,
+    )
+
+    try:
+        output_path = generate_pdf_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 4),
+        )
+    finally:
+        connection.close()
+
+    assert _pdf_page_count(output_path) == 3
+
+
 def test_pdf_uses_landscape_page_size() -> None:
     """PDF reports should use landscape orientation."""
     width, height = LANDSCAPE_PAGE_SIZE
@@ -389,7 +442,9 @@ def test_chart_flowables_include_chart_and_candidate_card(tmp_path: Path) -> Non
         for item in keep_together._content
     )
     assert "Action grade: Strong Buy Setup" in _flowable_text(keep_together)
-    assert "Suggested review levels" in _flowable_text(keep_together)
+    assert "AAA — AAA Example Holdings PLC — S&P 500" in _flowable_text(keep_together)
+    assert "Market: S&P 500" in _flowable_text(keep_together)
+    assert "Planning reference levels" in _flowable_text(keep_together)
     assert "These are not trading instructions." in _flowable_text(keep_together)
 
 
@@ -403,6 +458,7 @@ def test_candidate_card_text_appears_in_pdf_flowable(tmp_path: Path) -> None:
 
     assert "Candidate review" in card_text
     assert "Action grade: Strong Buy Setup" in card_text
+    assert "Market: S&P 500" in card_text
     assert "Score: 8 / 10" in card_text
     assert "Why" in card_text
     assert "Caution" in card_text
@@ -411,7 +467,49 @@ def test_candidate_card_text_appears_in_pdf_flowable(tmp_path: Path) -> None:
     assert "Crossover date: 2026-05-04" in card_text
     assert "USD 124.50" in card_text
     assert "20-day low USD 118.20" in card_text
-    assert "Close price is above the 50-day trend line." in card_text
+    assert "Close price is above the 50-day trend line" in card_text
+    assert len(card._cellvalues) <= 5
+
+
+def test_chart_flowable_uses_larger_pdf_chart_dimensions(tmp_path: Path) -> None:
+    """Stock pages should reserve most of the page for the chart image."""
+    chart_path = tmp_path / "AAA_price_trend.png"
+    chart_path.write_bytes(_tiny_png_bytes())
+    styles = pdf_report_module.getSampleStyleSheet()
+
+    flowables = _chart_flowables([sample_chart_detail("AAA", chart_path)], styles)
+    keep_together = flowables[1]
+    image = next(
+        item for item in keep_together._content
+        if isinstance(item, pdf_report_module.Image)
+    )
+
+    assert image.drawWidth == PDF_CHART_WIDTH
+    assert image.drawHeight == PDF_CHART_HEIGHT
+
+
+def test_candidate_card_wraps_long_text_in_readable_paragraphs(tmp_path: Path) -> None:
+    """Long candidate details should live in wrapped paragraph cells."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    chart_detail = sample_chart_detail("LONG", tmp_path / "LONG.png")
+    chart_detail["trade_candidate"]["grade_reasons"] = [
+        "Recent bullish crossover within 2 days with a very long explanatory phrase",
+        "Latest close is above the 50-day SMA with further context",
+        "No dividend risk flag present after the latest dividend metrics refresh",
+    ]
+    chart_detail["trade_candidate"]["grade_cautions"] = [
+        "Stop distance 13.2% is wider than the planning threshold",
+    ]
+
+    card = _candidate_card_flowable(chart_detail, styles)
+    card_text = _flowable_text(card)
+
+    assert "Recent bullish crossover within 2 days" in card_text
+    assert "Stop distance 13.2%" in card_text
+    assert all(
+        isinstance(row[1], pdf_report_module.Paragraph)
+        for row in card._cellvalues
+    )
 
 
 def test_candidate_card_formats_missing_values_as_not_available() -> None:
@@ -445,6 +543,7 @@ def test_pdf_index_page_is_generated_before_chart_pages(tmp_path: Path) -> None:
     assert "2026-05-04" in flowables[1].text
     assert "Stocks shown below" in flowables[3].text
     assert "Action grade" in _flowable_text(flowables)
+    assert "Market" in _flowable_text(flowables)
 
 
 def test_pdf_index_rows_split_into_two_groups_of_25(tmp_path: Path) -> None:
@@ -550,7 +649,8 @@ def test_pdf_index_only_lists_included_grades(tmp_path: Path) -> None:
     rows = _index_rows(included)
 
     assert [row[0] for row in rows] == ["STRB", "STRS"]
-    assert {row[2] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
+    assert {row[2] for row in rows} == {"S&P 500"}
+    assert {row[3] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
 
 
 def test_pdf_empty_state_message_when_no_strong_setups(tmp_path: Path) -> None:
@@ -697,3 +797,8 @@ def _tiny_png_bytes() -> bytes:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
         "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
     )
+
+
+def _pdf_page_count(pdf_path: Path) -> int:
+    """Count PDF page objects without adding a PDF parser dependency."""
+    return len(re.findall(rb"/Type\s*/Page\b", pdf_path.read_bytes()))

@@ -35,21 +35,30 @@ DEFAULT_BATCH_PAUSE_SECONDS = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS
 
 def get_active_securities(
     connection: duckdb.DuckDBPyConnection,
+    market: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Read tickers from the securities table.
 
     The project does not have an ``active`` flag yet, so every security with a
     non-empty ticker is treated as active.
     """
+    parameters: List[Any] = []
+    market_filter = ""
+    if market:
+        market_filter = "AND market = ?"
+        parameters.append(market)
+
     try:
         rows = connection.execute(
-            """
+            f"""
             SELECT security_id, ticker
             FROM securities
             WHERE ticker IS NOT NULL
               AND TRIM(ticker) <> ''
+              {market_filter}
             ORDER BY ticker
-            """
+            """,
+            parameters,
         ).fetchall()
     except duckdb.Error as error:
         raise RuntimeError(
@@ -278,6 +287,7 @@ def update_daily_prices(
     backfill_period: str = DEFAULT_PRICE_BACKFILL_PERIOD,
     sleep_function: SleepFunction = time.sleep,
     failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
+    market: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Download and store daily prices for every active ticker."""
     if batch_size <= 0:
@@ -288,12 +298,14 @@ def update_daily_prices(
 
     effective_start_date = _resolve_start_date(start_date, lookback_days, mode)
     download_period = _resolve_download_period(mode, backfill_period)
-    securities = get_active_securities(connection)
+    securities = get_active_securities(connection, market=market)
     summary = {
         "tickers_checked": len(securities),
         "price_rows_written": 0,
         "failed_tickers": {},
     }
+    if market:
+        summary["market"] = market
 
     total_tickers = len(securities)
     batches = _chunk_securities(securities, batch_size)
@@ -526,6 +538,7 @@ def backfill_daily_prices(
     pause_seconds: float = DEFAULT_PRICE_DOWNLOAD_PAUSE_SECONDS,
     batch_downloader: Optional[BatchDownloader] = None,
     failed_log_path: Path = DEFAULT_FAILED_PRICE_UPDATES_PATH,
+    market: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the larger historical price backfill mode."""
     return update_daily_prices(
@@ -536,6 +549,7 @@ def backfill_daily_prices(
         backfill_period=backfill_period,
         batch_downloader=batch_downloader,
         failed_log_path=failed_log_path,
+        market=market,
     )
 
 

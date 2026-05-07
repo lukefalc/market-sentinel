@@ -10,7 +10,7 @@ S&P 500 stocks.
 It currently can:
 
 - Load stock universe CSV files.
-- Update the FTSE 100 and S&P 500 universe CSVs from Wikipedia.
+- Update the FTSE 350 and S&P 500 universe CSVs from Wikipedia.
 - Store data in a local DuckDB database.
 - Download daily price data with `yfinance`.
 - Calculate simple moving averages.
@@ -21,8 +21,6 @@ It currently can:
 - Optionally send a plain-text daily email alert summary.
 
 It does not currently send iPhone notifications.
-
-It does not currently update the full FTSE 350 universe from the internet.
 
 ## Open Terminal And Go To The Project Folder
 
@@ -135,7 +133,8 @@ optimising further.
 The PDF report is the main daily report to read. It is chart-led: each selected
 stock gets one landscape page with a trend chart and a short explanation of why
 that stock was selected. The first page is a compact index of the stocks
-included in the chart report.
+included in the chart report. The index, chart page title, and candidate card
+show each stock's market marker, such as `S&P 500` or `FTSE 350`.
 
 The PDF selects stocks with moving-average crossovers from the past 7 days,
 up to the configured chart limit. The Excel workbook keeps the fuller crossover
@@ -151,7 +150,7 @@ PYTHONPATH=src python3 scripts/generate_charts.py
 By default, charts are kept simple: they show close price as a thin black dotted
 line plus the 7-day, 30-day, and 50-day moving averages over the last 180 days.
 The project limits chart generation to 50 tickers, prioritised by the most
-recent crossover date.
+recent crossover date. Chart image titles include the same market marker.
 
 Market data has three modes.
 
@@ -261,15 +260,18 @@ moving-average history:
 PYTHONPATH=src python3 scripts/backfill_moving_averages.py
 ```
 
-## Update The FTSE 100 And S&P 500 Universes
+## Update The FTSE 350 And S&P 500 Universes
 
-The FTSE 100 and S&P 500 universe CSVs can be refreshed from Wikipedia. FTSE
-250 and the full FTSE 350 CSV are not downloaded yet.
+The FTSE 350 and S&P 500 universe CSVs can be refreshed from Wikipedia. The
+FTSE 350 updater builds the UK universe from FTSE 100 plus FTSE 250
+constituent tables, then deduplicates tickers. FTSE 350 is the main UK
+universe. If `ftse_100.csv` still exists, it is superseded by `ftse_350.csv`
+and is not loaded by the normal universe loader.
 
-First update the FTSE 100 and S&P 500 CSVs:
+First update the FTSE 350 and S&P 500 CSVs:
 
 ```bash
-PYTHONPATH=src python3 scripts/update_ftse100_universe.py
+PYTHONPATH=src python3 scripts/update_ftse350_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
 ```
 
@@ -285,8 +287,13 @@ Then run the daily process:
 PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
-This only updates the universe CSV files. It does not update the full FTSE 350
-CSV, and it does not download prices by itself.
+This only updates the universe CSV files. It does not download prices by itself.
+
+To backfill historical prices for FTSE 350 only after loading the universe:
+
+```bash
+PYTHONPATH=src python3 scripts/backfill_market_data.py --market "FTSE 350"
+```
 
 ## Where The Database Is Saved
 
@@ -349,6 +356,8 @@ data tabs and also includes:
 
 The position sizing sheet is a planning calculator, not financial advice. The
 example values are placeholders to edit before using the workbook for review.
+Ticker-level workbook sheets include a `Market` column so S&P 500 and FTSE 350
+stocks can be filtered and reviewed separately.
 
 PDF reports are saved here:
 
@@ -359,7 +368,11 @@ PDF reports are saved here:
 Each PDF starts with an index page, then keeps one chart per landscape page.
 Under each chart is a compact trade candidate review card. The card explains
 why the stock was selected, the crossover signal and date, latest close price,
-suggested review levels, and basic risk notes.
+suggested review levels, market/index, and basic risk notes.
+Stock pages use a compact one-page layout: a short header, a large landscape
+chart, and a wrapped setup card underneath. The card keeps setup grade, score,
+market marker, signal details, why/caution text, planning reference levels, and
+one key risk note on the same page.
 
 These card levels are planning references, not trading instructions. They are
 controlled in `config/settings.yaml`:
@@ -573,10 +586,10 @@ Generate chart images:
 PYTHONPATH=src python3 scripts/generate_charts.py
 ```
 
-Update FTSE 100 and S&P 500, load the universe, then run the daily process:
+Update FTSE 350 and S&P 500, load the universe, then run the daily process:
 
 ```bash
-PYTHONPATH=src python3 scripts/update_ftse100_universe.py
+PYTHONPATH=src python3 scripts/update_ftse350_universe.py
 PYTHONPATH=src python3 scripts/update_sp500_universe.py
 PYTHONPATH=src python3 scripts/load_universe.py
 PYTHONPATH=src python3 scripts/run_daily_fast.py

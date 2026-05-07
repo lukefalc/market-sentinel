@@ -179,12 +179,15 @@ def load_universe_files(
 
 
 def default_universe_files(universe_dir: Optional[Path] = None) -> List[Path]:
-    """Return the default FTSE and S&P universe CSV paths."""
+    """Return the default universe CSV paths, avoiding duplicate UK universes."""
     base_dir = (
         Path(universe_dir) if universe_dir is not None else default_universe_dir()
     )
+    ftse_350_path = base_dir / "ftse_350.csv"
+    ftse_100_path = base_dir / "ftse_100.csv"
+    uk_path = ftse_350_path if ftse_350_path.exists() else ftse_100_path
+
     return [
-        base_dir / "ftse_100.csv",
-        base_dir / "ftse_350.csv",
         base_dir / "sp_500.csv",
+        uk_path,
     ]

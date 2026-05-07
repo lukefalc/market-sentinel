@@ -271,9 +271,14 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert summary_values["Dividend Risk Flags"] == 1
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
+    assert workbook["Latest Prices"]["B1"].value == "Market"
+    assert workbook["Latest Prices"]["B2"].value == "S&P 500"
     assert workbook["Moving Averages"]["A2"].value == "AAA"
+    assert workbook["Moving Averages"]["B1"].value == "Market"
     assert workbook["Recent Moving Averages"]["A2"].value == "AAA"
+    assert workbook["Recent Moving Averages"]["B1"].value == "Market"
     assert workbook["Recent Crossovers"]["A2"].value == "AAA"
+    assert workbook["Recent Crossovers"]["C1"].value == "Market"
     assert workbook["Recent Crossovers"]["D2"].value == "Bullish"
     assert workbook["Recent Crossovers"]["A3"].value == "BBB"
     assert workbook["Recent Crossovers"].max_row == 3
@@ -292,9 +297,13 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     )
     assert workbook["Crossover Signals"]["G4"].value == "13 days ago"
     assert workbook["Dividend Metrics"]["A2"].value == "AAA"
+    assert workbook["Dividend Metrics"]["B1"].value == "Market"
     assert workbook["High Dividend Stocks"]["A2"].value == "AAA"
-    assert workbook["Dividend Risk Flags"]["E2"].value == "Dividend yield is above 7%."
+    assert workbook["High Dividend Stocks"]["B1"].value == "Market"
+    assert workbook["Dividend Risk Flags"]["B1"].value == "Market"
+    assert workbook["Dividend Risk Flags"]["F2"].value == "Dividend yield is above 7%."
     assert workbook["Trade Candidates"]["A1"].value == "Ticker"
+    assert workbook["Trade Candidates"]["C1"].value == "Market"
     assert workbook["Trade Candidates"]["E1"].value == "Action Grade"
     assert workbook["Trade Candidates"]["A2"].value == "AAA"
     assert workbook["Trade Candidates"]["E2"].value is not None
@@ -536,7 +545,7 @@ def test_generate_excel_report_limits_large_moving_average_history(
     )
 
     assert workbook["Moving Averages"].max_row == 2
-    assert workbook["Moving Averages"]["B2"].value.date() == date(2026, 5, 20)
+    assert workbook["Moving Averages"]["C2"].value.date() == date(2026, 5, 20)
     assert workbook["Recent Moving Averages"].max_row == 6
     assert "Recent Moving Averages was limited to 5 rows" in summary_text
 
