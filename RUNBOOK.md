@@ -393,6 +393,32 @@ The generated workbook can be refreshed each run, so keep lasting review notes,
 decisions, and outcomes in `Trade Journal`.
 Ticker-level workbook sheets include a `Market` column so S&P 500 and FTSE 350
 stocks can be filtered and reviewed separately.
+Trade candidate rows also include a `Portfolio Status` marker so you can see
+whether a ticker is already held, on the watchlist, both, or a new candidate.
+
+Optional local portfolio files live here:
+
+```text
+config/portfolio/holdings.csv
+config/portfolio/watchlist.csv
+```
+
+The holdings file uses:
+
+```text
+ticker,name,market,quantity,average_cost,notes
+```
+
+The watchlist file uses:
+
+```text
+ticker,name,market,reason,notes
+```
+
+If either file is missing, Market Sentinel treats it as empty and continues.
+PDF and Excel reports show only compact portfolio markers such as `Held`,
+`Watchlist`, `Held + Watchlist`, or `New`; PDF cards include quantity when it is
+present.
 
 PDF reports are saved here:
 

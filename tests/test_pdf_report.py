@@ -303,6 +303,9 @@ def test_generate_pdf_report_can_include_chart_images(
                             "Close price is above the 50-day trend line.",
                             "Dividend risk flag present.",
                         ],
+                        "portfolio_status": "Held",
+                        "holding_quantity": "12",
+                        "watchlist_reason": "",
                     },
                     "signals": [
                         {
@@ -444,6 +447,7 @@ def test_chart_flowables_include_chart_and_candidate_card(tmp_path: Path) -> Non
     assert "Action grade: Strong Buy Setup" in _flowable_text(keep_together)
     assert "AAA — AAA Example Holdings PLC — S&P 500" in _flowable_text(keep_together)
     assert "Market: S&P 500" in _flowable_text(keep_together)
+    assert "Portfolio status: Held (12)" in _flowable_text(keep_together)
     assert "Planning reference levels" in _flowable_text(keep_together)
     assert "These are not trading instructions." in _flowable_text(keep_together)
 
@@ -459,6 +463,7 @@ def test_candidate_card_text_appears_in_pdf_flowable(tmp_path: Path) -> None:
     assert "Candidate review" in card_text
     assert "Action grade: Strong Buy Setup" in card_text
     assert "Market: S&P 500" in card_text
+    assert "Portfolio status: Held (12)" in card_text
     assert "Score: 8 / 10" in card_text
     assert "Why" in card_text
     assert "Caution" in card_text
@@ -544,6 +549,8 @@ def test_pdf_index_page_is_generated_before_chart_pages(tmp_path: Path) -> None:
     assert "Stocks shown below" in flowables[3].text
     assert "Action grade" in _flowable_text(flowables)
     assert "Market" in _flowable_text(flowables)
+    assert "Portfolio" in _flowable_text(flowables)
+    assert "Held" in _flowable_text(flowables)
 
 
 def test_pdf_index_rows_split_into_two_groups_of_25(tmp_path: Path) -> None:
@@ -897,6 +904,9 @@ def sample_chart_detail(
                 "Close price is above the 50-day trend line.",
                 "No dividend risk flag.",
             ],
+            "portfolio_status": "Held",
+            "holding_quantity": "12",
+            "watchlist_reason": "",
         },
         "signals": [
             {

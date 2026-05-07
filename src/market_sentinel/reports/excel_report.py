@@ -807,6 +807,9 @@ def _fetch_trade_candidates(
         "20-day Low/High Reference",
         "20% Trailing Reference",
         "Dividend Risk Flag",
+        "Portfolio Status",
+        "Holding Quantity",
+        "Watchlist Reason",
         "Risk Notes",
     ]
     raw_rows = connection.execute(
@@ -863,6 +866,9 @@ def _fetch_trade_candidates(
                 _twenty_day_reference(candidate),
                 review_levels.get("20% trailing reference"),
                 candidate.get("dividend_risk_flag") or "",
+                candidate.get("portfolio_status") or "New",
+                candidate.get("holding_quantity") or "",
+                candidate.get("watchlist_reason") or "",
                 " | ".join(candidate.get("risk_notes", [])),
             )
         )

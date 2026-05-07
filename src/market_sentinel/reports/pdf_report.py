@@ -203,10 +203,11 @@ def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
         "Direction",
         "Crossed",
         "Days",
+        "Portfolio",
     ]
     table = Table(
         [headers] + list(rows),
-        colWidths=[36, 78, 54, 72, 44, 50, 36],
+        colWidths=[36, 70, 50, 64, 40, 46, 28, 36],
     )
     table.setStyle(
         TableStyle(
@@ -246,6 +247,10 @@ def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
                 first_signal.get("direction", ""),
                 crossover_date,
                 first_signal.get("days_since_crossover", ""),
+                _portfolio_status_text(
+                    chart_detail.get("trade_candidate") or chart_detail,
+                    compact=True,
+                ),
             ]
         )
 
@@ -357,6 +362,7 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
                 f"Score: {_not_available(candidate.get('score'))} / "
                 f"{_not_available(candidate.get('max_score', 10))} | "
                 f"Market: {_market_marker(candidate.get('market'), candidate.get('ticker', ''))} | "
+                f"Portfolio status: {_portfolio_status_text(candidate)} | "
                 "Rule-based setup grade only. These are not trading instructions.",
                 card_style,
             ),
@@ -441,6 +447,9 @@ def _candidate_from_chart_detail(chart_detail: Dict[str, Any]) -> Dict[str, Any]
         "grade_reasons": chart_detail.get("grade_reasons", []),
         "grade_cautions": chart_detail.get("grade_cautions", []),
         "risk_notes": chart_detail.get("risk_notes", []),
+        "portfolio_status": chart_detail.get("portfolio_status", "New"),
+        "holding_quantity": chart_detail.get("holding_quantity", ""),
+        "watchlist_reason": chart_detail.get("watchlist_reason", ""),
     }
 
 
@@ -700,6 +709,22 @@ def _key_risk_note_text(candidate: Dict[str, Any]) -> str:
         return "Not available"
 
     return _compact_sentence(risk_notes[0])
+
+
+def _portfolio_status_text(
+    candidate: Dict[str, Any],
+    compact: bool = False,
+) -> str:
+    """Return compact portfolio status text for PDF index and cards."""
+    status = str(candidate.get("portfolio_status") or "New").strip()
+    if status == "New" and not compact:
+        status = "New candidate"
+
+    quantity = candidate.get("holding_quantity")
+    if quantity not in (None, ""):
+        return f"{status} ({quantity})"
+
+    return status
 
 
 def _compact_sentence(value: Any) -> str:

@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import duckdb
 
 from market_sentinel.config.loader import load_named_config
+from market_sentinel.data.portfolio_loader import portfolio_status_for_ticker
 
 DEFAULT_STOP_SHORT_WINDOW_DAYS = 20
 DEFAULT_TRAILING_STOP_PERCENT = 20
@@ -99,6 +100,11 @@ def build_trade_candidate(
         connection,
         security["security_id"],
     )
+    portfolio_status = portfolio_status_for_ticker(
+        security["ticker"],
+        security["market"],
+        config_dir=config_dir,
+    )
     grade = _action_grade(
         direction,
         _to_date(signal.get("crossover_date")),
@@ -134,6 +140,9 @@ def build_trade_candidate(
             latest_50_sma,
             dividend_risk_flag,
         ),
+        "portfolio_status": portfolio_status["portfolio_status"],
+        "holding_quantity": portfolio_status["holding_quantity"],
+        "watchlist_reason": portfolio_status["watchlist_reason"],
     }
 
 

@@ -320,6 +320,8 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert "Review decision" in trade_candidate_headers
     assert "Planned stop" in trade_candidate_headers
     assert "Position size" in trade_candidate_headers
+    portfolio_status_column = trade_candidate_headers.index("Portfolio Status") + 1
+    assert workbook["Trade Candidates"].cell(2, portfolio_status_column).value == "New"
 
 
 def test_trade_candidates_sheet_has_review_decision_values(

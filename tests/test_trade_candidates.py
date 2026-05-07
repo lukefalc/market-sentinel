@@ -22,6 +22,8 @@ def write_settings(config_dir: Path, database_path: Path) -> None:
                 "candidate_include_trailing_reference: true",
                 "candidate_grade_stop_distance_warning_percent: 12",
                 "candidate_recent_strong_days: 2",
+                "portfolio_holdings_path: config/portfolio/holdings.csv",
+                "portfolio_watchlist_path: config/portfolio/watchlist.csv",
             ]
         ),
         encoding="utf-8",
@@ -142,11 +144,81 @@ def test_bullish_candidate_review_levels(tmp_path: Path) -> None:
 
     assert candidate["latest_close_price"] == 119.0
     assert candidate["market"] == "S&P 500"
+    assert candidate["portfolio_status"] == "New"
     assert candidate["review_levels"]["50-day SMA"] == 110.0
     assert candidate["review_levels"]["20-day low"] == 100.0
     assert candidate["review_levels"]["20% trailing reference"] == 95.2
     assert "Close price is above the 50-day trend line." in candidate["risk_notes"]
     assert "No dividend risk flag." in candidate["risk_notes"]
+
+
+def test_trade_candidate_marks_held_watchlist_and_new_statuses(
+    tmp_path: Path,
+) -> None:
+    """Trade candidates should include portfolio status markers."""
+    connection, config_dir = open_test_database(tmp_path)
+    portfolio_dir = config_dir / "portfolio"
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+    portfolio_dir.joinpath("holdings.csv").write_text(
+        "\n".join(
+            [
+                "ticker,name,market,quantity,average_cost,notes",
+                "AAA,Example A,S&P 500,15,100,Test holding",
+                "BOTH,Example Both,S&P 500,3,80,Test holding",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    portfolio_dir.joinpath("watchlist.csv").write_text(
+        "\n".join(
+            [
+                "ticker,name,market,reason,notes",
+                "BBB,Example B,S&P 500,Waiting for breakout,Test watchlist",
+                "BOTH,Example Both,S&P 500,Held and watching,Test watchlist",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        insert_candidate_security(connection, security_id=1, ticker="AAA")
+        insert_candidate_security(connection, security_id=2, ticker="BBB")
+        insert_candidate_security(connection, security_id=3, ticker="BOTH")
+        insert_candidate_security(connection, security_id=4, ticker="NEW")
+
+        held_candidate = build_trade_candidate(
+            connection,
+            "AAA",
+            bullish_signal(),
+            config_dir,
+        )
+        watchlist_candidate = build_trade_candidate(
+            connection,
+            "BBB",
+            bullish_signal(),
+            config_dir,
+        )
+        both_candidate = build_trade_candidate(
+            connection,
+            "BOTH",
+            bullish_signal(),
+            config_dir,
+        )
+        new_candidate = build_trade_candidate(
+            connection,
+            "NEW",
+            bullish_signal(),
+            config_dir,
+        )
+    finally:
+        connection.close()
+
+    assert held_candidate["portfolio_status"] == "Held"
+    assert held_candidate["holding_quantity"] == "15"
+    assert watchlist_candidate["portfolio_status"] == "Watchlist"
+    assert watchlist_candidate["watchlist_reason"] == "Waiting for breakout"
+    assert both_candidate["portfolio_status"] == "Held + Watchlist"
+    assert new_candidate["portfolio_status"] == "New"
 
 
 def test_strong_buy_setup_grading(tmp_path: Path) -> None:
