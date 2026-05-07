@@ -30,6 +30,14 @@ chart_show_close_price: true
 chart_close_price_style: dotted
 chart_close_price_color: black
 chart_close_price_linewidth: 1
+chart_show_crossover_marker: false
+chart_show_20_day_reference: false
+chart_show_possible_flag_pattern: true
+chart_show_200_day_sma: false
+flag_prior_trend_days: 45
+flag_consolidation_days: 20
+flag_min_prior_move_percent: 8
+flag_max_consolidation_range_percent: 12
 chart_include_sma_periods:
   - 7
   - 30

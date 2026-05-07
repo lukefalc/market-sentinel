@@ -6,6 +6,7 @@ dashboard.
 """
 
 from datetime import date, datetime, timedelta
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -14,6 +15,13 @@ import duckdb
 from market_sentinel.analytics.crossovers import DEFAULT_CROSSOVER_RECENT_DAYS
 from market_sentinel.analytics.crossovers import describe_crossover
 from market_sentinel.analytics.crossovers import format_days_since_crossover
+from market_sentinel.analytics.flag_patterns import (
+    DEFAULT_FLAG_CONSOLIDATION_DAYS,
+    DEFAULT_FLAG_MAX_CONSOLIDATION_RANGE_PERCENT,
+    DEFAULT_FLAG_MIN_PRIOR_MOVE_PERCENT,
+    DEFAULT_FLAG_PRIOR_TREND_DAYS,
+    detect_possible_flag_pattern,
+)
 from market_sentinel.analytics.trade_candidates import build_trade_candidate
 from market_sentinel.config.loader import load_named_config
 
@@ -25,6 +33,11 @@ DEFAULT_CLOSE_PRICE_STYLE = "dotted"
 DEFAULT_CLOSE_PRICE_COLOR = "black"
 DEFAULT_CLOSE_PRICE_LINEWIDTH = 1.0
 DEFAULT_MOVING_AVERAGE_PERIODS = [7, 30, 50]
+DEFAULT_SHOW_CROSSOVER_MARKER = False
+DEFAULT_SHOW_20_DAY_REFERENCE = False
+DEFAULT_SHOW_POSSIBLE_FLAG_PATTERN = True
+DEFAULT_SHOW_200_DAY_SMA = False
+CHART_CACHE_VERSION = "chart-v3-possible-flag-pattern"
 
 
 def generate_charts(
@@ -32,6 +45,7 @@ def generate_charts(
     output_dir: Optional[Path] = None,
     config_dir: Optional[Path] = None,
     tickers: Optional[Sequence[str]] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Generate price and moving-average charts for selected tickers.
 
@@ -41,6 +55,7 @@ def generate_charts(
         config_dir: Optional folder containing settings YAML files.
         tickers: Optional explicit ticker list. If omitted, the module chooses a
             small daily-report set from recent crossover signals.
+        force: When true, regenerate chart PNGs even if cached images look current.
     """
     settings = _load_settings(config_dir)
     target_dir = _resolve_chart_output_dir(output_dir, settings)
@@ -76,6 +91,22 @@ def generate_charts(
         "chart_close_price_linewidth",
         DEFAULT_CLOSE_PRICE_LINEWIDTH,
     )
+    show_crossover_marker = _bool_setting(
+        settings,
+        "chart_show_crossover_marker",
+        DEFAULT_SHOW_CROSSOVER_MARKER,
+    )
+    show_20_day_reference = _bool_setting(
+        settings,
+        "chart_show_20_day_reference",
+        DEFAULT_SHOW_20_DAY_REFERENCE,
+    )
+    show_possible_flag_pattern = _bool_setting(
+        settings,
+        "chart_show_possible_flag_pattern",
+        DEFAULT_SHOW_POSSIBLE_FLAG_PATTERN,
+    )
+    flag_settings = _flag_pattern_settings(settings)
     include_grades = _pdf_include_setup_grades(settings)
 
     try:
@@ -103,6 +134,7 @@ def generate_charts(
     chart_details: List[Dict[str, Any]] = []
     skipped: Dict[str, str] = {}
     reused_files = 0
+    force_regenerated_files = 0
 
     for index, selection in enumerate(selected_signals, start=1):
         ticker = selection["ticker"]
@@ -141,8 +173,30 @@ def generate_charts(
             print(f"Skipped {ticker}: {skipped[ticker]}")
             continue
 
+        chart_data["trade_candidate"] = trade_candidate
+        chart_data["candidate_signal"] = (selection.get("signals") or [None])[0]
+        chart_data["show_crossover_marker"] = show_crossover_marker
+        chart_data["show_20_day_reference"] = show_20_day_reference
+        chart_data["show_possible_flag_pattern"] = show_possible_flag_pattern
+        chart_data["flag_pattern"] = None
+        if show_possible_flag_pattern:
+            chart_data["flag_pattern"] = detect_possible_flag_pattern(
+                chart_data["prices"],
+                (trade_candidate or {}).get("signal_direction", ""),
+                **flag_settings,
+            )
+        chart_data["chart_cache_key"] = _chart_cache_key(
+            chart_data,
+            show_close_price,
+            sma_periods,
+            close_price_style,
+            close_price_color,
+            close_price_linewidth,
+        )
+
         output_path = target_dir / f"{_safe_filename(ticker)}_price_trend.png"
-        if _chart_is_current(output_path, chart_data):
+        output_exists = output_path.exists()
+        if not force and _chart_is_current(output_path, chart_data):
             reused_files += 1
             print(f"Reusing existing chart: {output_path}")
         else:
@@ -156,7 +210,12 @@ def generate_charts(
                 close_price_color,
                 close_price_linewidth,
             )
-            print(f"Saved chart: {output_path}")
+            _write_chart_cache_metadata(output_path, chart_data)
+            if force and output_exists:
+                force_regenerated_files += 1
+                print(f"Force-regenerated chart: {output_path}")
+            else:
+                print(f"Created chart: {output_path}")
 
         generated_files.append(output_path)
         chart_details.append(
@@ -177,7 +236,8 @@ def generate_charts(
 
     print(
         "Chart generation complete: "
-        f"{len(generated_files)} available, {reused_files} reused, {len(skipped)} skipped"
+        f"{len(generated_files)} available, {reused_files} reused, "
+        f"{force_regenerated_files} force-regenerated, {len(skipped)} skipped"
     )
     chart_details = sorted(chart_details, key=_chart_detail_sort_key)
 
@@ -185,6 +245,7 @@ def generate_charts(
         "tickers_checked": len(selected_tickers),
         "charts_created": len(generated_files),
         "charts_reused": reused_files,
+        "charts_force_regenerated": force_regenerated_files,
         "chart_paths": [detail["chart_path"] for detail in chart_details],
         "chart_details": chart_details,
         "skipped": skipped,
@@ -245,6 +306,9 @@ def _chart_is_current(output_path: Path, chart_data: Dict[str, Any]) -> bool:
     if not output_path.exists():
         return False
 
+    if not _chart_cache_metadata_matches(output_path, chart_data):
+        return False
+
     prices = chart_data.get("prices") or []
     if not prices:
         return False
@@ -258,12 +322,114 @@ def _chart_is_current(output_path: Path, chart_data: Dict[str, Any]) -> bool:
     return output_path.stat().st_mtime >= latest_datetime.timestamp()
 
 
+def _chart_cache_metadata_matches(
+    output_path: Path,
+    chart_data: Dict[str, Any],
+) -> bool:
+    """Return true when chart cache metadata matches the current chart settings."""
+    expected_key = chart_data.get("chart_cache_key")
+    if not expected_key:
+        return False
+
+    metadata_path = _chart_cache_metadata_path(output_path)
+    if not metadata_path.exists():
+        return False
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    return metadata.get("chart_cache_key") == expected_key
+
+
+def _write_chart_cache_metadata(output_path: Path, chart_data: Dict[str, Any]) -> None:
+    """Write a small sidecar file used to invalidate stale chart PNGs."""
+    cache_key = chart_data.get("chart_cache_key")
+    if not cache_key:
+        return
+
+    metadata = {
+        "chart_cache_key": cache_key,
+        "chart_cache_version": CHART_CACHE_VERSION,
+    }
+    _chart_cache_metadata_path(output_path).write_text(
+        json.dumps(metadata, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _chart_cache_metadata_path(output_path: Path) -> Path:
+    """Return the sidecar metadata path for one chart PNG."""
+    return output_path.with_suffix(".chart.json")
+
+
+def _chart_cache_key(
+    chart_data: Dict[str, Any],
+    show_close_price: bool,
+    sma_periods: Sequence[int],
+    close_price_style: str,
+    close_price_color: str,
+    close_price_linewidth: float,
+) -> str:
+    """Return a stable key for settings that change chart appearance."""
+    candidate = chart_data.get("trade_candidate") or {}
+    signal = chart_data.get("candidate_signal") or {}
+    review_levels = candidate.get("review_levels") or {}
+    payload = {
+        "version": CHART_CACHE_VERSION,
+        "show_close_price": show_close_price,
+        "sma_periods": list(sma_periods),
+        "close_price_style": close_price_style,
+        "close_price_color": close_price_color,
+        "close_price_linewidth": close_price_linewidth,
+        "show_crossover_marker": chart_data.get("show_crossover_marker"),
+        "show_20_day_reference": chart_data.get("show_20_day_reference"),
+        "show_possible_flag_pattern": chart_data.get("show_possible_flag_pattern"),
+        "flag_pattern": _flag_pattern_cache_payload(chart_data.get("flag_pattern")),
+        "action_grade": candidate.get("action_grade"),
+        "signal_direction": candidate.get("signal_direction") or signal.get("direction"),
+        "crossover_date": _date_cache_value(
+            candidate.get("crossover_date") or signal.get("crossover_date")
+        ),
+        "20_day_low": review_levels.get("20-day low"),
+        "20_day_high": review_levels.get("20-day high"),
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
 def _load_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
     """Load settings, falling back to defaults when settings are unavailable."""
     try:
         return load_named_config("settings", config_dir)
     except FileNotFoundError:
         return {}
+
+
+def _flag_pattern_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Read possible flag-pattern settings with conservative defaults."""
+    return {
+        "prior_trend_days": _positive_int_setting(
+            settings,
+            "flag_prior_trend_days",
+            DEFAULT_FLAG_PRIOR_TREND_DAYS,
+        ),
+        "consolidation_days": _positive_int_setting(
+            settings,
+            "flag_consolidation_days",
+            DEFAULT_FLAG_CONSOLIDATION_DAYS,
+        ),
+        "min_prior_move_percent": _positive_float_setting(
+            settings,
+            "flag_min_prior_move_percent",
+            DEFAULT_FLAG_MIN_PRIOR_MOVE_PERCENT,
+        ),
+        "max_consolidation_range_percent": _positive_float_setting(
+            settings,
+            "flag_max_consolidation_range_percent",
+            DEFAULT_FLAG_MAX_CONSOLIDATION_RANGE_PERCENT,
+        ),
+    }
 
 
 def _resolve_chart_output_dir(
@@ -357,6 +523,15 @@ def _sma_periods_setting(settings: Dict[str, Any]) -> List[int]:
 
         if period > 0 and period not in periods:
             periods.append(period)
+
+    if not periods:
+        periods = DEFAULT_MOVING_AVERAGE_PERIODS.copy()
+
+    if _bool_setting(settings, "chart_show_200_day_sma", DEFAULT_SHOW_200_DAY_SMA):
+        if 200 not in periods:
+            periods.append(200)
+    else:
+        periods = [period for period in periods if period != 200]
 
     return periods or DEFAULT_MOVING_AVERAGE_PERIODS
 
@@ -553,7 +728,11 @@ def _fetch_chart_data(
     cutoff_date = latest_date - timedelta(days=lookback_days)
     price_rows = connection.execute(
         """
-        SELECT prices.price_date, prices.close_price
+        SELECT
+            prices.price_date,
+            prices.close_price,
+            prices.high_price,
+            prices.low_price
         FROM daily_prices AS prices
         INNER JOIN securities
             ON prices.security_id = securities.security_id
@@ -581,7 +760,7 @@ def _fetch_chart_data(
         moving_averages[period] = [(_to_date(row[0]), row[1]) for row in rows]
 
     return {
-        "prices": [(_to_date(row[0]), row[1]) for row in price_rows],
+        "prices": [(_to_date(row[0]), row[1], row[2], row[3]) for row in price_rows],
         "moving_averages": moving_averages,
         "company_name": company_name or "",
         "currency": currency or "",
@@ -642,6 +821,15 @@ def _write_chart_image(
             linewidth=1.2,
         )
 
+    if chart_data.get("show_20_day_reference", DEFAULT_SHOW_20_DAY_REFERENCE):
+        _add_20_day_reference_line(ax, chart_data)
+
+    if chart_data.get("show_crossover_marker", DEFAULT_SHOW_CROSSOVER_MARKER):
+        _add_crossover_marker(ax, chart_data)
+
+    if chart_data.get("show_possible_flag_pattern", DEFAULT_SHOW_POSSIBLE_FLAG_PATTERN):
+        _add_possible_flag_pattern_lines(ax, chart_data)
+
     ax.set_title(_chart_image_title(ticker, chart_data))
     ax.set_xlabel("Date")
     currency = chart_data.get("currency")
@@ -657,6 +845,158 @@ def _write_chart_image(
     fig.tight_layout()
     fig.savefig(output_path, dpi=120)
     plt.close(fig)
+
+
+def _add_20_day_reference_line(ax, chart_data: Dict[str, Any]) -> None:
+    """Add the relevant 20-day planning reference line for the candidate."""
+    candidate = chart_data.get("trade_candidate") or {}
+    review_levels = candidate.get("review_levels") or {}
+    direction = candidate.get("signal_direction")
+    action_grade = candidate.get("action_grade")
+
+    if direction == "Bullish" and action_grade == "Strong Buy Setup":
+        value = review_levels.get("20-day low")
+        label = "20-day low reference"
+        color = "#2E7D32"
+    elif direction == "Bearish" and action_grade == "Strong Sell Setup":
+        value = review_levels.get("20-day high")
+        label = "20-day high reference"
+        color = "#B3261E"
+    else:
+        return
+
+    if value is None:
+        print(f"Chart warning: {label} is not available; reference line was skipped.")
+        return
+
+    ax.axhline(
+        value,
+        color=color,
+        linestyle="--",
+        linewidth=1.5,
+        alpha=0.9,
+        label=label,
+        zorder=3,
+    )
+
+
+def _add_crossover_marker(ax, chart_data: Dict[str, Any]) -> None:
+    """Mark the crossover signal used for the candidate card."""
+    candidate = chart_data.get("trade_candidate") or {}
+    signal = chart_data.get("candidate_signal") or {}
+    direction = candidate.get("signal_direction") or signal.get("direction")
+    crossover_date = _to_date(
+        candidate.get("crossover_date") or signal.get("crossover_date")
+    )
+
+    if crossover_date is None:
+        return
+
+    price_rows = chart_data.get("prices", [])
+    if not _crossover_date_is_visible(price_rows, crossover_date):
+        print(
+            "Chart warning: crossover date "
+            f"{crossover_date.isoformat()} is outside the visible chart window; "
+            "marker was skipped."
+        )
+        return
+
+    marker_price = _price_on_or_before_date(price_rows, crossover_date)
+    if marker_price is None:
+        print(
+            "Chart warning: no visible close price was found for crossover date "
+            f"{crossover_date.isoformat()}; marker was skipped."
+        )
+        return
+
+    if direction == "Bullish":
+        marker = "^"
+        color = "#1B8E3E"
+        label = "Bullish crossover"
+    elif direction == "Bearish":
+        marker = "v"
+        color = "#C62828"
+        label = "Bearish crossover"
+    else:
+        return
+
+    ax.axvline(
+        crossover_date,
+        color=color,
+        linestyle=":",
+        linewidth=1.0,
+        alpha=0.55,
+        zorder=2,
+    )
+    ax.scatter(
+        [crossover_date],
+        [marker_price],
+        marker=marker,
+        s=96,
+        color=color,
+        edgecolors="black",
+        linewidths=0.9,
+        zorder=5,
+        label=label,
+    )
+
+
+def _add_possible_flag_pattern_lines(ax, chart_data: Dict[str, Any]) -> None:
+    """Draw cautious possible flag-pattern guide lines when detected."""
+    flag_pattern = chart_data.get("flag_pattern")
+    if not flag_pattern:
+        return
+
+    upper_line = flag_pattern.get("upper_line")
+    lower_line = flag_pattern.get("lower_line")
+    if not upper_line or not lower_line:
+        return
+
+    line_color = "#5F6368"
+    for line_index, line in enumerate([upper_line, lower_line]):
+        dates = [line[0][0], line[1][0]]
+        values = [line[0][1], line[1][1]]
+        ax.plot(
+            dates,
+            values,
+            color=line_color,
+            linestyle="--",
+            linewidth=1.15,
+            alpha=0.78,
+            label="Possible flag pattern" if line_index == 0 else "_nolegend_",
+            zorder=4,
+        )
+
+
+def _crossover_date_is_visible(
+    price_rows: Sequence[Tuple[date, float]],
+    crossover_date: date,
+) -> bool:
+    """Return true when the crossover date falls inside the visible price window."""
+    visible_dates = [row[0] for row in price_rows if row and row[0]]
+    if not visible_dates:
+        return False
+
+    return min(visible_dates) <= crossover_date <= max(visible_dates)
+
+
+def _price_on_or_before_date(
+    price_rows: Sequence[Tuple[date, float]],
+    target_date: date,
+) -> Optional[float]:
+    """Return close price on the target date, falling back to the prior row."""
+    selected_price = None
+
+    for row in price_rows:
+        price_date = row[0]
+        close_price = row[1]
+        if price_date is None or close_price is None:
+            continue
+        if price_date > target_date:
+            break
+        selected_price = close_price
+
+    return selected_price
 
 
 def _matplotlib_line_style(style_name: str) -> str:
@@ -720,3 +1060,35 @@ def _to_date(value: Any) -> Optional[date]:
         return value
 
     return date.fromisoformat(str(value)[:10])
+
+
+def _date_cache_value(value: Any) -> Optional[str]:
+    """Return an ISO date string for chart cache metadata."""
+    parsed_date = _to_date(value)
+    if parsed_date is None:
+        return None
+
+    return parsed_date.isoformat()
+
+
+def _flag_pattern_cache_payload(flag_pattern: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a JSON-safe flag-pattern payload for chart cache keys."""
+    if not flag_pattern:
+        return None
+
+    return {
+        "direction": flag_pattern.get("direction"),
+        "upper_line": _line_cache_payload(flag_pattern.get("upper_line")),
+        "lower_line": _line_cache_payload(flag_pattern.get("lower_line")),
+    }
+
+
+def _line_cache_payload(line: Any) -> Optional[list]:
+    """Return JSON-safe line endpoints for chart cache keys."""
+    if not line:
+        return None
+
+    return [
+        [_date_cache_value(line[0][0]), line[0][1]],
+        [_date_cache_value(line[1][0]), line[1][1]],
+    ]

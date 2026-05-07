@@ -147,6 +147,13 @@ files:
 PYTHONPATH=src python3 scripts/generate_charts.py
 ```
 
+If you have changed chart settings or want to ignore existing cached PNG files,
+force regeneration:
+
+```bash
+PYTHONPATH=src python3 scripts/generate_charts.py --force
+```
+
 By default, charts are kept simple: they show close price as a thin black dotted
 line plus the 7-day, 30-day, and 50-day moving averages over the last 180 days.
 The project limits chart generation to 50 tickers, prioritised by the most
@@ -387,6 +394,18 @@ candidate_grade_stop_distance_warning_percent: 12
 candidate_recent_strong_days: 2
 pdf_max_charts_total: 50
 pdf_max_charts_per_market: 25
+chart_show_crossover_marker: false
+chart_show_20_day_reference: false
+chart_show_possible_flag_pattern: true
+chart_include_sma_periods:
+  - 7
+  - 30
+  - 50
+chart_show_200_day_sma: false
+flag_prior_trend_days: 45
+flag_consolidation_days: 20
+flag_min_prior_move_percent: 8
+flag_max_consolidation_range_percent: 12
 pdf_include_setup_grades:
   - Strong Buy Setup
   - Strong Sell Setup
@@ -425,6 +444,15 @@ market, selected charts are sorted by higher score, strong buy before strong
 sell when scores tie, most recent crossover, and ticker. The first-page index
 includes only the stocks that have chart pages in the PDF and shows a compact
 included count by market.
+
+The chart itself stays deliberately simple: close price plus the 7-day, 30-day,
+and 50-day SMAs. Crossover markers and 20-day high/low reference lines are off
+by default because the planning levels already appear in the candidate card.
+When `chart_show_possible_flag_pattern` is enabled, the chart may draw two
+subtle guide lines labelled `Possible flag pattern` if a conservative recent
+consolidation channel is detected after a strong prior move. This is only a
+visual guide, not a confirmed pattern. The 200-day SMA is off by default to keep
+the PDF chart clean.
 
 Supporting chart images are saved here:
 
@@ -590,6 +618,12 @@ Generate chart images:
 
 ```bash
 PYTHONPATH=src python3 scripts/generate_charts.py
+```
+
+To bypass cached chart images:
+
+```bash
+PYTHONPATH=src python3 scripts/generate_charts.py --force
 ```
 
 Update FTSE 350 and S&P 500, load the universe, then run the daily process:

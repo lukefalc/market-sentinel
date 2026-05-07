@@ -1,9 +1,11 @@
 """Tests for chart generation."""
 
+from datetime import date
 from pathlib import Path
 
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
+from scripts import generate_charts as generate_charts_script
 from market_sentinel.reports import charts as charts_module
 from market_sentinel.reports.charts import generate_charts
 
@@ -31,6 +33,10 @@ def write_chart_config(
                 "chart_close_price_style: dotted",
                 "chart_close_price_color: black",
                 "chart_close_price_linewidth: 1",
+                "chart_show_crossover_marker: false",
+                "chart_show_20_day_reference: false",
+                "chart_show_possible_flag_pattern: true",
+                "chart_show_200_day_sma: false",
                 "chart_include_sma_periods:",
                 "  - 7",
                 "  - 30",
@@ -526,6 +532,8 @@ def test_generate_charts_uses_simple_defaults(
         observed["close_price_style"] = close_price_style
         observed["close_price_color"] = close_price_color
         observed["close_price_linewidth"] = close_price_linewidth
+        observed["show_crossover_marker"] = chart_data.get("show_crossover_marker")
+        observed["show_20_day_reference"] = chart_data.get("show_20_day_reference")
         output_path.write_bytes(b"fake chart")
 
     monkeypatch.setattr(charts_module, "_fetch_chart_data", fake_fetch_chart_data)
@@ -548,6 +556,260 @@ def test_generate_charts_uses_simple_defaults(
     assert observed["close_price_style"] == "dotted"
     assert observed["close_price_color"] == "black"
     assert observed["close_price_linewidth"] == 1.0
+    assert observed["show_crossover_marker"] is False
+    assert observed["show_20_day_reference"] is False
+
+
+def test_generate_charts_passes_selected_crossover_date_to_writer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Chart generation should pass the selected candidate signal into the writer."""
+    connection, config_dir, _chart_dir = open_test_database(tmp_path)
+    observed = {}
+
+    def recording_writer(
+        ticker,
+        chart_data,
+        output_path,
+        show_close_price,
+        sma_periods,
+        close_price_style,
+        close_price_color,
+        close_price_linewidth,
+    ):
+        observed[ticker] = {
+            "candidate_crossover_date": chart_data["trade_candidate"][
+                "crossover_date"
+            ],
+            "signal_crossover_date": chart_data["candidate_signal"][
+                "crossover_date"
+            ],
+        }
+        output_path.write_bytes(b"fake chart")
+
+    monkeypatch.setattr(charts_module, "_write_chart_image", recording_writer)
+
+    try:
+        insert_chart_selection_data(connection)
+        generate_charts(connection, config_dir=config_dir)
+    finally:
+        connection.close()
+
+    assert observed["AAA"]["candidate_crossover_date"] == date(2026, 5, 5)
+    assert observed["AAA"]["signal_crossover_date"] == date(2026, 5, 5)
+
+
+def test_force_generation_bypasses_cached_images(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Force mode should regenerate chart images even when cache says current."""
+    connection, config_dir, _chart_dir = open_test_database(tmp_path)
+    write_calls = []
+
+    def fake_build_trade_candidate(connection_arg, ticker, signal, config_dir=None):
+        return {
+            "ticker": ticker,
+            "signal_direction": "Bullish",
+            "action_grade": "Strong Buy Setup",
+            "crossover_date": date(2026, 5, 2),
+            "review_levels": {"20-day low": 98.5},
+        }
+
+    def fake_fetch_chart_data(connection_arg, ticker, lookback_days, sma_periods):
+        return {
+            "prices": [
+                (date(2026, 5, 1), 100.0),
+                (date(2026, 5, 2), 104.0),
+            ],
+            "moving_averages": {},
+            "company_name": "Example A",
+            "market": "S&P 500",
+            "currency": "USD",
+        }
+
+    def fake_writer(
+        ticker,
+        chart_data,
+        output_path,
+        show_close_price,
+        sma_periods,
+        close_price_style,
+        close_price_color,
+        close_price_linewidth,
+    ):
+        write_calls.append(ticker)
+        output_path.write_bytes(b"old chart")
+        output_path.write_bytes(b"forced chart")
+
+    monkeypatch.setattr(charts_module, "build_trade_candidate", fake_build_trade_candidate)
+    monkeypatch.setattr(charts_module, "_fetch_chart_data", fake_fetch_chart_data)
+    monkeypatch.setattr(charts_module, "_chart_is_current", lambda output_path, chart_data: True)
+    monkeypatch.setattr(charts_module, "_write_chart_image", fake_writer)
+
+    try:
+        chart_dir = config_dir.parent / "charts"
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        (chart_dir / "AAA_price_trend.png").write_bytes(b"cached chart")
+        summary = generate_charts(
+            connection,
+            config_dir=config_dir,
+            tickers=["AAA"],
+            force=True,
+        )
+    finally:
+        connection.close()
+
+    captured = capsys.readouterr()
+    assert summary["charts_reused"] == 0
+    assert summary["charts_force_regenerated"] == 1
+    assert write_calls == ["AAA"]
+    assert "Force-regenerated chart:" in captured.out
+
+
+def test_chart_cache_metadata_changes_when_chart_settings_change(tmp_path: Path) -> None:
+    """Chart cache metadata should invalidate when visual settings change."""
+    output_path = tmp_path / "AAA_price_trend.png"
+    output_path.write_bytes(b"old chart")
+    chart_data = {
+        "prices": [(date(2026, 5, 2), 104.0)],
+        "show_crossover_marker": True,
+        "show_20_day_reference": True,
+        "trade_candidate": {
+            "signal_direction": "Bullish",
+            "action_grade": "Strong Buy Setup",
+            "crossover_date": date(2026, 5, 2),
+            "review_levels": {"20-day low": 98.5},
+        },
+    }
+    chart_data["chart_cache_key"] = charts_module._chart_cache_key(
+        chart_data,
+        True,
+        [7, 30, 50],
+        "dotted",
+        "black",
+        1.0,
+    )
+    charts_module._write_chart_cache_metadata(output_path, chart_data)
+
+    changed_chart_data = {
+        **chart_data,
+        "show_crossover_marker": False,
+    }
+    changed_chart_data["chart_cache_key"] = charts_module._chart_cache_key(
+        changed_chart_data,
+        True,
+        [7, 30, 50],
+        "dotted",
+        "black",
+        1.0,
+    )
+
+    assert charts_module._chart_cache_metadata_matches(output_path, chart_data)
+    assert not charts_module._chart_cache_metadata_matches(
+        output_path,
+        changed_chart_data,
+    )
+
+
+def test_generate_charts_script_parses_force_flag() -> None:
+    """The chart script should expose a beginner-friendly cache bypass flag."""
+    args = generate_charts_script.parse_args(["--force"])
+
+    assert args.force is True
+
+
+def test_crossover_marker_can_still_be_drawn_when_enabled() -> None:
+    """Crossover markers should be optional rather than default chart clutter."""
+    ax = RecordingAxes()
+    chart_data = {
+        "prices": [
+            (date(2026, 5, 1), 100.0),
+            (date(2026, 5, 2), 104.0),
+            (date(2026, 5, 3), 106.0),
+        ],
+        "trade_candidate": {
+            "signal_direction": "Bullish",
+            "action_grade": "Strong Buy Setup",
+            "crossover_date": date(2026, 5, 2),
+            "review_levels": {"20-day low": 98.5},
+        },
+    }
+
+    charts_module._add_crossover_marker(ax, chart_data)
+
+    assert ax.markers[0]["marker"] == "^"
+    assert ax.markers[0]["label"] == "Bullish crossover"
+    assert ax.markers[0]["x"] == [date(2026, 5, 2)]
+    assert ax.markers[0]["y"] == [104.0]
+
+
+def test_20_day_reference_line_can_still_be_drawn_when_enabled() -> None:
+    """20-day references should be optional rather than default chart clutter."""
+    ax = RecordingAxes()
+    chart_data = {
+        "prices": [
+            (date(2026, 5, 1), 106.0),
+            (date(2026, 5, 2), 103.0),
+            (date(2026, 5, 3), 100.0),
+        ],
+        "trade_candidate": {
+            "signal_direction": "Bearish",
+            "action_grade": "Strong Sell Setup",
+            "crossover_date": date(2026, 5, 2),
+            "review_levels": {"20-day high": 109.5},
+        },
+    }
+
+    charts_module._add_20_day_reference_line(ax, chart_data)
+
+    assert ax.lines == [
+        {
+            "value": 109.5,
+            "label": "20-day high reference",
+            "linestyle": "--",
+        }
+    ]
+
+
+def test_default_chart_overlays_are_clean() -> None:
+    """Crossover markers and 20-day references should be off by default."""
+    assert charts_module.DEFAULT_SHOW_CROSSOVER_MARKER is False
+    assert charts_module.DEFAULT_SHOW_20_DAY_REFERENCE is False
+    assert charts_module.DEFAULT_SHOW_POSSIBLE_FLAG_PATTERN is True
+
+
+def test_possible_flag_pattern_lines_are_drawn_when_detected() -> None:
+    """Detected possible flag patterns should add two guide lines to the chart."""
+    ax = RecordingAxes()
+    chart_data = {
+        "flag_pattern": {
+            "upper_line": (
+                (date(2026, 5, 1), 120.0),
+                (date(2026, 5, 20), 117.0),
+            ),
+            "lower_line": (
+                (date(2026, 5, 1), 112.0),
+                (date(2026, 5, 20), 110.0),
+            ),
+        }
+    }
+
+    charts_module._add_possible_flag_pattern_lines(ax, chart_data)
+
+    assert len(ax.plotted_lines) == 2
+    assert ax.plotted_lines[0]["label"] == "Possible flag pattern"
+    assert ax.plotted_lines[1]["label"] == "_nolegend_"
+
+
+def test_200_day_sma_is_not_shown_by_default() -> None:
+    """Default chart settings should not include the 200-day SMA."""
+    assert charts_module._sma_periods_setting({}) == [7, 30, 50]
+    assert charts_module._sma_periods_setting(
+        {"chart_include_sma_periods": [7, 30, 50, 200]}
+    ) == [7, 30, 50]
 
 
 def test_chart_image_title_includes_market_marker() -> None:
@@ -572,3 +834,50 @@ def fake_chart_writer(
 ) -> None:
     """Write a tiny fake PNG so tests do not need a graphics backend."""
     output_path.write_bytes(b"fake png data for " + ticker.encode("utf-8"))
+
+
+class RecordingAxes:
+    """Tiny matplotlib Axes stand-in for annotation tests."""
+
+    def __init__(self):
+        self.lines = []
+        self.markers = []
+        self.vertical_lines = []
+        self.plotted_lines = []
+
+    def axhline(self, value, **kwargs):
+        self.lines.append(
+            {
+                "value": value,
+                "label": kwargs.get("label"),
+                "linestyle": kwargs.get("linestyle"),
+            }
+        )
+
+    def scatter(self, x, y, **kwargs):
+        self.markers.append(
+            {
+                "x": x,
+                "y": y,
+                "marker": kwargs.get("marker"),
+                "label": kwargs.get("label"),
+            }
+        )
+
+    def axvline(self, value, **kwargs):
+        self.vertical_lines.append(
+            {
+                "value": value,
+                "linestyle": kwargs.get("linestyle"),
+            }
+        )
+
+    def plot(self, x, y, **kwargs):
+        self.plotted_lines.append(
+            {
+                "x": x,
+                "y": y,
+                "label": kwargs.get("label"),
+                "linestyle": kwargs.get("linestyle"),
+            }
+        )
