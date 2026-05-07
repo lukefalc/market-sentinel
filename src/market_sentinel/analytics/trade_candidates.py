@@ -16,6 +16,12 @@ DEFAULT_INCLUDE_20_DAY_EXTREME_STOP = True
 DEFAULT_INCLUDE_TRAILING_REFERENCE = True
 DEFAULT_STOP_DISTANCE_WARNING_PERCENT = 12
 DEFAULT_RECENT_STRONG_DAYS = 2
+DEFAULT_PORTFOLIO_PRIORITY_ORDER = [
+    "Held + Watchlist",
+    "Held",
+    "Watchlist",
+    "New",
+]
 
 
 def load_trade_candidate_settings(config_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -61,7 +67,22 @@ def load_trade_candidate_settings(config_dir: Optional[Path] = None) -> Dict[str
             "candidate_recent_strong_days",
             DEFAULT_RECENT_STRONG_DAYS,
         ),
+        "portfolio_priority_order": _portfolio_priority_order_setting(settings),
     }
+
+
+def portfolio_priority_rank(
+    portfolio_status: Any,
+    priority_order: Optional[list] = None,
+) -> int:
+    """Return the review priority rank for a portfolio status."""
+    order = priority_order or DEFAULT_PORTFOLIO_PRIORITY_ORDER
+    status = str(portfolio_status or "New")
+
+    try:
+        return order.index(status)
+    except ValueError:
+        return len(order)
 
 
 def build_trade_candidate(
@@ -544,6 +565,20 @@ def _bool_setting(
         return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
     return default_value
+
+
+def _portfolio_priority_order_setting(settings: Dict[str, Any]) -> list:
+    """Read portfolio priority order from settings with a safe default."""
+    raw_order = settings.get(
+        "portfolio_priority_order",
+        DEFAULT_PORTFOLIO_PRIORITY_ORDER,
+    )
+
+    if not isinstance(raw_order, list):
+        return DEFAULT_PORTFOLIO_PRIORITY_ORDER
+
+    order = [str(item).strip() for item in raw_order if str(item).strip()]
+    return order or DEFAULT_PORTFOLIO_PRIORITY_ORDER
 
 
 def _to_date(value: Any) -> Optional[date]:

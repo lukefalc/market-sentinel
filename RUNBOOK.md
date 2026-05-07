@@ -395,6 +395,9 @@ Ticker-level workbook sheets include a `Market` column so S&P 500 and FTSE 350
 stocks can be filtered and reviewed separately.
 Trade candidate rows also include a `Portfolio Status` marker so you can see
 whether a ticker is already held, on the watchlist, both, or a new candidate.
+Reports use that marker to make review order practical: held names are shown
+first, then watchlist names, then new candidates. The Excel `Summary` sheet also
+shows counts for held, watchlist, new, S&P 500, and FTSE 350 candidates.
 
 Optional local portfolio files live here:
 

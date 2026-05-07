@@ -52,6 +52,11 @@ candidate_grade_stop_distance_warning_percent: 12
 candidate_recent_strong_days: 2
 portfolio_holdings_path: config/portfolio/holdings.csv
 portfolio_watchlist_path: config/portfolio/watchlist.csv
+portfolio_priority_order:
+  - Held + Watchlist
+  - Held
+  - Watchlist
+  - New
 pdf_include_setup_grades:
   - Strong Buy Setup
   - Strong Sell Setup

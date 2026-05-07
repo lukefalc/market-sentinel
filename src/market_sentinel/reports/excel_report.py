@@ -15,7 +15,10 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from market_sentinel.analytics.trade_candidates import build_trade_candidate
+from market_sentinel.analytics.trade_candidates import (
+    build_trade_candidate,
+    portfolio_priority_rank,
+)
 from market_sentinel.analytics.crossovers import (
     DEFAULT_CROSSOVER_RECENT_DAYS,
     describe_crossover,
@@ -151,20 +154,26 @@ def generate_excel_report(
                 limit_notes,
             )
 
+        trade_candidate_data = _fetch_trade_candidates(
+            connection,
+            selected_date,
+            crossover_recent_days,
+            config_dir,
+        )
         _write_trade_candidates_sheet(
             workbook,
-            _fetch_trade_candidates(
-                connection,
-                selected_date,
-                crossover_recent_days,
-                config_dir,
-            ),
+            trade_candidate_data,
             max_rows_per_sheet,
             limit_notes,
         )
         _write_position_sizing_sheet(workbook)
         _write_trade_journal_sheet(workbook)
-        _write_summary_sheet(summary_sheet, connection, limit_notes)
+        _write_summary_sheet(
+            summary_sheet,
+            connection,
+            limit_notes,
+            trade_candidate_data[1],
+        )
 
         workbook.save(output_path)
     except duckdb.Error as error:
@@ -231,6 +240,7 @@ def _write_summary_sheet(
     sheet,
     connection: duckdb.DuckDBPyConnection,
     limit_notes: Sequence[str],
+    trade_candidate_rows: Optional[Sequence[Sequence[Any]]] = None,
 ) -> None:
     """Write the Summary worksheet."""
     rows = [
@@ -246,6 +256,9 @@ def _write_summary_sheet(
         ("Latest Price Date", _latest_price_date(connection) or "No prices yet"),
     ]
 
+    if trade_candidate_rows is not None:
+        rows.extend(_trade_candidate_summary_rows(trade_candidate_rows))
+
     if limit_notes:
         rows.append(("", ""))
         rows.append(("Report Notes", ""))
@@ -253,6 +266,40 @@ def _write_summary_sheet(
             rows.append((note, ""))
 
     _write_rows(sheet, rows)
+
+
+def _trade_candidate_summary_rows(
+    trade_candidate_rows: Sequence[Sequence[Any]],
+) -> List[Sequence[Any]]:
+    """Return compact Trade Candidate counts for the Summary worksheet."""
+    portfolio_counts = {
+        "Held candidates": 0,
+        "Watchlist candidates": 0,
+        "New candidates": 0,
+    }
+    market_counts: Dict[str, int] = {}
+
+    for row in trade_candidate_rows:
+        market = str(row[2] or "Market unknown")
+        portfolio_status = str(row[14] or "New")
+        market_counts[market] = market_counts.get(market, 0) + 1
+
+        if portfolio_status in {"Held", "Held + Watchlist"}:
+            portfolio_counts["Held candidates"] += 1
+        elif portfolio_status == "Watchlist":
+            portfolio_counts["Watchlist candidates"] += 1
+        else:
+            portfolio_counts["New candidates"] += 1
+
+    return [
+        ("", ""),
+        ("Trade Candidate Review", ""),
+        ("Held candidates", portfolio_counts["Held candidates"]),
+        ("Watchlist candidates", portfolio_counts["Watchlist candidates"]),
+        ("New candidates", portfolio_counts["New candidates"]),
+        ("S&P 500 candidates", market_counts.get("S&P 500", 0)),
+        ("FTSE 350 candidates", market_counts.get("FTSE 350", 0)),
+    ]
 
 
 def _write_table_sheet(
@@ -891,19 +938,17 @@ def _twenty_day_reference(candidate: Dict[str, Any]) -> Any:
 
 
 def _trade_candidate_sort_key(row: Sequence[Any]) -> tuple:
-    """Sort Trade Candidates rows by workbook setup priority."""
+    """Sort Trade Candidates rows by portfolio-aware review priority."""
     grade = row[4]
-    crossover_date = row[6]
-
-    if hasattr(crossover_date, "toordinal"):
-        crossover_ordinal = crossover_date.toordinal()
-    else:
-        crossover_ordinal = 0
+    score = row[5] or 0
+    market = row[2] or ""
+    portfolio_status = row[14] or "New"
 
     return (
+        portfolio_priority_rank(portfolio_status),
+        -score,
         _trade_candidate_grade_rank(grade),
-        -crossover_ordinal,
-        -(row[5] or 0),
+        market,
         row[0] or "",
     )
 

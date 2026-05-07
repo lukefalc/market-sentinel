@@ -354,6 +354,63 @@ def test_trade_candidates_sheet_has_review_decision_values(
     assert validations
 
 
+def test_trade_candidates_sheet_sorts_by_portfolio_status(
+    tmp_path: Path,
+) -> None:
+    """Trade Candidates should put held names ahead of new names."""
+    config_dir = tmp_path / "config"
+    database_path = tmp_path / "data" / "market_sentinel.duckdb"
+    output_dir = tmp_path / "outputs" / "excel"
+    write_settings(config_dir, database_path)
+    portfolio_dir = config_dir / "portfolio"
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+    portfolio_dir.joinpath("holdings.csv").write_text(
+        "\n".join(
+            [
+                "ticker,name,market,quantity,average_cost,notes",
+                "BBB,Example B,FTSE 350,25,100,Test holding",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    portfolio_dir.joinpath("watchlist.csv").write_text(
+        "ticker,name,market,reason,notes\n",
+        encoding="utf-8",
+    )
+    connection = open_duckdb_connection(config_dir)
+    initialise_database_schema(connection)
+
+    try:
+        insert_report_data(connection)
+        output_path = generate_excel_report(
+            connection,
+            output_dir=output_dir,
+            report_date=date(2026, 5, 3),
+            config_dir=config_dir,
+        )
+    finally:
+        connection.close()
+
+    workbook = load_workbook(output_path)
+    sheet = workbook["Trade Candidates"]
+    headers = [cell.value for cell in sheet[1]]
+    portfolio_status_column = headers.index("Portfolio Status") + 1
+    holding_quantity_column = headers.index("Holding Quantity") + 1
+    summary_values = {
+        workbook["Summary"][f"A{row}"].value: workbook["Summary"][f"B{row}"].value
+        for row in range(1, workbook["Summary"].max_row + 1)
+    }
+
+    assert sheet["A2"].value == "BBB"
+    assert sheet.cell(2, portfolio_status_column).value == "Held"
+    assert sheet.cell(2, holding_quantity_column).value == "25"
+    assert summary_values["Held candidates"] == 1
+    assert summary_values["Watchlist candidates"] == 0
+    assert summary_values["New candidates"] == 1
+    assert summary_values["S&P 500 candidates"] == 1
+    assert summary_values["FTSE 350 candidates"] == 1
+
+
 def test_position_sizing_sheet_has_expected_labels_and_formulas(
     tmp_path: Path,
 ) -> None:

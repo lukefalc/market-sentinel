@@ -3,7 +3,10 @@
 from datetime import date, timedelta
 from pathlib import Path
 
-from market_sentinel.analytics.trade_candidates import build_trade_candidate
+from market_sentinel.analytics.trade_candidates import (
+    build_trade_candidate,
+    portfolio_priority_rank,
+)
 from market_sentinel.database.connection import open_duckdb_connection
 from market_sentinel.database.schema import initialise_database_schema
 
@@ -219,6 +222,13 @@ def test_trade_candidate_marks_held_watchlist_and_new_statuses(
     assert watchlist_candidate["watchlist_reason"] == "Waiting for breakout"
     assert both_candidate["portfolio_status"] == "Held + Watchlist"
     assert new_candidate["portfolio_status"] == "New"
+
+
+def test_portfolio_priority_rank_orders_review_groups() -> None:
+    """Portfolio priority should put held/watchlist names before new names."""
+    assert portfolio_priority_rank("Held + Watchlist") < portfolio_priority_rank("Held")
+    assert portfolio_priority_rank("Held") < portfolio_priority_rank("Watchlist")
+    assert portfolio_priority_rank("Watchlist") < portfolio_priority_rank("New")
 
 
 def test_strong_buy_setup_grading(tmp_path: Path) -> None:

@@ -20,6 +20,10 @@ from reportlab.platypus import (
 )
 
 from market_sentinel.config.loader import load_named_config
+from market_sentinel.analytics.trade_candidates import (
+    DEFAULT_PORTFOLIO_PRIORITY_ORDER,
+    portfolio_priority_rank,
+)
 from market_sentinel.reports.charts import generate_charts
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pdf"
@@ -144,37 +148,58 @@ def _index_page_flowables(
         Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
         Spacer(1, 8),
         Paragraph(summary_text, styles["Normal"]),
-        *(_market_count_flowables(chart_details, styles) if detail_count else []),
+        *(_portfolio_market_count_flowables(chart_details, styles) if detail_count else []),
         Spacer(1, 12),
         _index_tables(chart_details),
     ]
 
 
-def _market_count_flowables(chart_details: Sequence[Dict[str, Any]], styles) -> List[Any]:
-    """Return a compact market count summary for the PDF index."""
-    counts: Dict[str, int] = {}
+def _portfolio_market_count_flowables(
+    chart_details: Sequence[Dict[str, Any]],
+    styles,
+) -> List[Any]:
+    """Return a compact portfolio and market count summary for the PDF index."""
+    market_counts: Dict[str, int] = {}
+    portfolio_counts = {
+        "Held": 0,
+        "Watchlist": 0,
+        "New": 0,
+    }
 
     for chart_detail in chart_details:
         market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
-        counts[market] = counts.get(market, 0) + 1
+        market_counts[market] = market_counts.get(market, 0) + 1
+        portfolio_status = _candidate_portfolio_status(chart_detail)
+        if portfolio_status in {"Held", "Held + Watchlist"}:
+            portfolio_counts["Held"] += 1
+        elif portfolio_status == "Watchlist":
+            portfolio_counts["Watchlist"] += 1
+        else:
+            portfolio_counts["New"] += 1
 
     ordered_markets = [
-        market for market in PDF_MARKET_ORDER if market in counts
-    ] + sorted(market for market in counts if market not in PDF_MARKET_ORDER)
-    summary = "Included: " + " | ".join(
-        f"{market}: {counts[market]}" for market in ordered_markets
+        market for market in PDF_MARKET_ORDER if market in market_counts
+    ] + sorted(market for market in market_counts if market not in PDF_MARKET_ORDER)
+    summary_parts = [
+        f"Held: {portfolio_counts['Held']}",
+        f"Watchlist: {portfolio_counts['Watchlist']}",
+        f"New: {portfolio_counts['New']}",
+    ]
+    summary_parts.extend(
+        f"{market}: {market_counts[market]}" for market in ordered_markets
     )
 
     return [
         Spacer(1, 4),
-        Paragraph(summary, styles["Normal"]),
+        Paragraph("Included: " + " | ".join(summary_parts), styles["Normal"]),
     ]
 
 
 def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
     """Return two side-by-side compact index tables."""
-    left_rows = _index_rows(chart_details[:25])
-    right_rows = _index_rows(chart_details[25:50])
+    grouped_rows = _grouped_index_rows(chart_details)
+    left_rows = grouped_rows[:25]
+    right_rows = grouped_rows[25:50]
     index_table = Table(
         [[_compact_index_table(left_rows), _compact_index_table(right_rows)]],
         colWidths=[370, 370],
@@ -223,6 +248,29 @@ def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
         )
     )
     return table
+
+
+def _grouped_index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
+    """Return index rows with compact portfolio group marker rows."""
+    grouped_rows = []
+    group_labels = [
+        ("Held / Held + Watchlist", {"Held", "Held + Watchlist"}),
+        ("Watchlist", {"Watchlist"}),
+        ("New candidates", {"New"}),
+    ]
+
+    for label, statuses in group_labels:
+        group_details = [
+            chart_detail
+            for chart_detail in chart_details
+            if _candidate_portfolio_status(chart_detail) in statuses
+        ]
+        if not group_details:
+            continue
+        grouped_rows.append([label, "", "", "", "", "", "", ""])
+        grouped_rows.extend(_index_rows(group_details))
+
+    return grouped_rows
 
 
 def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
@@ -571,14 +619,11 @@ def _market_balanced_chart_details(
             )
             selected_by_market.setdefault(market, []).append(chart_detail)
 
-    for market_details in selected_by_market.values():
-        market_details.sort(key=_market_candidate_sort_key)
-
-    ordered_markets = sorted(selected_by_market, key=_market_sort_key)
     selected: List[Dict[str, Any]] = []
-    for market in ordered_markets:
-        selected.extend(selected_by_market[market])
+    for market_details in selected_by_market.values():
+        selected.extend(market_details)
 
+    selected.sort(key=_portfolio_candidate_sort_key)
     return selected[:max_total]
 
 
@@ -593,6 +638,7 @@ def _market_candidate_sort_key(chart_detail: Dict[str, Any]) -> tuple:
         crossover_ordinal = 0
 
     return (
+        _portfolio_status_rank(candidate.get("portfolio_status")),
         -_score_value(candidate.get("score")),
         _strong_grade_sort_rank(candidate.get("action_grade")),
         -crossover_ordinal,
@@ -604,8 +650,27 @@ def _chart_detail_sort_key(chart_detail: Dict[str, Any]) -> tuple:
     """Return the current PDF chart sort key for compatibility."""
     market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
     return (
+        *_portfolio_candidate_sort_key(chart_detail),
         _market_sort_key(market),
-        *_market_candidate_sort_key(chart_detail),
+    )
+
+
+def _portfolio_candidate_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort selected PDF candidates in portfolio-aware review order."""
+    candidate = chart_detail.get("trade_candidate") or {}
+    crossover_date = _chart_crossover_date(chart_detail)
+
+    if hasattr(crossover_date, "toordinal"):
+        crossover_ordinal = crossover_date.toordinal()
+    else:
+        crossover_ordinal = 0
+
+    return (
+        _portfolio_status_rank(candidate.get("portfolio_status")),
+        -_score_value(candidate.get("score")),
+        _strong_grade_sort_rank(candidate.get("action_grade")),
+        -crossover_ordinal,
+        chart_detail.get("ticker", ""),
     )
 
 
@@ -632,6 +697,20 @@ def _score_value(score: Any) -> float:
         return float(score)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _candidate_portfolio_status(chart_detail: Dict[str, Any]) -> str:
+    """Return portfolio status from a chart detail or nested candidate."""
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return str(candidate.get("portfolio_status") or "New")
+
+
+def _portfolio_status_rank(portfolio_status: Any) -> int:
+    """Return the configured default PDF portfolio priority rank."""
+    return portfolio_priority_rank(
+        portfolio_status,
+        DEFAULT_PORTFOLIO_PRIORITY_ORDER,
+    )
 
 
 def _chart_crossover_date(chart_detail: Dict[str, Any]) -> Any:

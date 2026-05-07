@@ -729,7 +729,7 @@ def test_pdf_selection_allows_spillover_when_market_has_unused_slots(
 
 
 def test_pdf_selection_sorts_by_score_within_market(tmp_path: Path) -> None:
-    """Within each market, higher scores should appear first."""
+    """Within each portfolio group and market, higher scores should appear first."""
     chart_details = [
         sample_chart_detail("LOW", tmp_path / "LOW.png", score=7, market="S&P 500"),
         sample_chart_detail("HIGH", tmp_path / "HIGH.png", score=9, market="S&P 500"),
@@ -740,8 +740,58 @@ def test_pdf_selection_sorts_by_score_within_market(tmp_path: Path) -> None:
 
     included = _included_chart_details(chart_details, {})
 
-    assert [detail["ticker"] for detail in included[:3]] == ["HIGH", "MID", "LOW"]
-    assert [detail["ticker"] for detail in included[3:]] == ["FTH.L", "FTL.L"]
+    assert [detail["ticker"] for detail in included] == [
+        "FTH.L",
+        "HIGH",
+        "MID",
+        "LOW",
+        "FTL.L",
+    ]
+
+
+def test_pdf_ordering_respects_portfolio_priority_before_score(
+    tmp_path: Path,
+) -> None:
+    """PDF pages should review held/watchlist names before new high scores."""
+    chart_details = [
+        sample_chart_detail(
+            "NEW",
+            tmp_path / "NEW.png",
+            score=10,
+            portfolio_status="New",
+            holding_quantity="",
+        ),
+        sample_chart_detail(
+            "WATCH",
+            tmp_path / "WATCH.png",
+            score=9,
+            portfolio_status="Watchlist",
+            holding_quantity="",
+        ),
+        sample_chart_detail(
+            "HELD",
+            tmp_path / "HELD.png",
+            score=7,
+            portfolio_status="Held",
+            holding_quantity="12",
+        ),
+        sample_chart_detail(
+            "BOTH",
+            tmp_path / "BOTH.png",
+            score=6,
+            portfolio_status="Held + Watchlist",
+            holding_quantity="4",
+        ),
+    ]
+
+    included = _included_chart_details(chart_details, {})
+
+    assert [detail["ticker"] for detail in included] == [
+        "BOTH",
+        "HELD",
+        "WATCH",
+        "NEW",
+    ]
 
 
 def test_pdf_selection_prefers_strong_buy_when_score_is_equal(
@@ -771,17 +821,39 @@ def test_pdf_selection_prefers_strong_buy_when_score_is_equal(
 
 
 def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
-    """The PDF index should show a compact count by market."""
+    """The PDF index should show compact portfolio and market counts."""
     styles = pdf_report_module.getSampleStyleSheet()
     chart_details = [
-        sample_chart_detail("AAA", tmp_path / "AAA.png", market="S&P 500"),
-        sample_chart_detail("BBB.L", tmp_path / "BBB.png", market="FTSE 350"),
-        sample_chart_detail("CCC.L", tmp_path / "CCC.png", market="FTSE 350"),
+        sample_chart_detail(
+            "AAA",
+            tmp_path / "AAA.png",
+            market="S&P 500",
+            portfolio_status="Held",
+        ),
+        sample_chart_detail(
+            "BBB.L",
+            tmp_path / "BBB.png",
+            market="FTSE 350",
+            portfolio_status="Watchlist",
+            holding_quantity="",
+        ),
+        sample_chart_detail(
+            "CCC.L",
+            tmp_path / "CCC.png",
+            market="FTSE 350",
+            portfolio_status="New",
+            holding_quantity="",
+        ),
     ]
 
     flowables = _index_page_flowables(chart_details, date(2026, 5, 4), styles)
 
-    assert "Included: S&P 500: 1 | FTSE 350: 2" in _flowable_text(flowables)
+    assert (
+        "Included: Held: 1 | Watchlist: 1 | New: 1 | S&P 500: 1 | FTSE 350: 2"
+        in _flowable_text(flowables)
+    )
+    assert "Held / Held + Watchlist" in _flowable_text(flowables)
+    assert "New candidates" in _flowable_text(flowables)
 
 
 def test_pdf_index_order_matches_market_balanced_chart_page_order(
@@ -798,7 +870,7 @@ def test_pdf_index_order_matches_market_balanced_chart_page_order(
     rows = _index_rows(included)
 
     assert [row[0] for row in rows] == [detail["ticker"] for detail in included]
-    assert [row[0] for row in rows] == ["SPHIGH", "SPLOW", "FTHIGH.L", "FTLOW.L"]
+    assert [row[0] for row in rows] == ["SPHIGH", "FTHIGH.L", "SPLOW", "FTLOW.L"]
 
 
 def test_pdf_empty_state_message_when_no_strong_setups(tmp_path: Path) -> None:
@@ -870,6 +942,8 @@ def sample_chart_detail(
     score: int = 8,
     crossover_date: date = date(2026, 5, 4),
     market: str = "S&P 500",
+    portfolio_status: str = "Held",
+    holding_quantity: str = "12",
 ):
     """Return one sample chart detail for PDF index tests."""
     return {
@@ -904,8 +978,8 @@ def sample_chart_detail(
                 "Close price is above the 50-day trend line.",
                 "No dividend risk flag.",
             ],
-            "portfolio_status": "Held",
-            "holding_quantity": "12",
+            "portfolio_status": portfolio_status,
+            "holding_quantity": holding_quantity,
             "watchlist_reason": "",
         },
         "signals": [
