@@ -76,15 +76,15 @@ pip install -e ".[dev]"
 
 Then try the test command again.
 
-## Run The Fast Daily Process
+## Daily Button
 
 The usual daily command is:
 
 ```bash
-PYTHONPATH=src python3 scripts/run_daily_fast.py
+PYTHONPATH=src python3 scripts/run_daily_process.py
 ```
 
-This runs the fast daily steps in order:
+This runs the lightweight daily steps in order:
 
 1. Load universe CSV files.
 2. Update market data incrementally.
@@ -96,15 +96,15 @@ This runs the fast daily steps in order:
 8. Generate the PDF report.
 9. Generate the Excel report.
 
-The fast daily process skips dividend history downloads by default. This keeps
+The daily process skips dividend history downloads by default. This keeps
 the normal daily run focused on recent prices, moving averages, crossovers, and
 reports. Risk flags still use the latest dividend metrics already stored in the
 database.
 
-If you want the normal daily process that also sends the optional email, run:
+The older fast daily command is still available if needed:
 
 ```bash
-PYTHONPATH=src python3 scripts/run_daily_process.py
+PYTHONPATH=src python3 scripts/run_daily_fast.py
 ```
 
 This normal daily process also skips dividend downloads by default. To force a
@@ -126,18 +126,29 @@ stale prices, short price histories, and missing moving-average data. It prints
 Warnings do not stop report generation; they make data gaps visible in the
 console, PDF first page, and Excel `Summary` sheet.
 
-## Run The Weekly Full Process
+## Weekly Button
 
-Run the fuller weekly command when you want to include dividend updates:
+Run weekly maintenance when you want the fuller weekly refresh:
 
 ```bash
+PYTHONPATH=src python3 scripts/run_weekly_maintenance.py
+```
+
+This is the preferred weekly command. It is a wrapper around the existing
+working weekly full process, so it runs the same workflow as:
+
 PYTHONPATH=src python3 scripts/run_weekly_full.py
 ```
 
-The weekly process includes the same reporting steps as the daily process, but
-also runs dividend calculations before risk flags and reports. It also sends the
-optional daily alert email if email is configured. The process scripts print
-timing logs around each step and a final timing summary.
+Use weekly maintenance once a week when you want to refresh the slower weekly
+steps, including dividend metrics, reports, and the optional email alert. The
+script prints timing logs around each step and a final weekly summary.
+
+If data health shows `Warning`, read the counts in the console or Excel
+`Summary` sheet. Stale prices may clear on the next market-data update. Short
+price histories usually mean a ticker needs more backfill time or has limited
+available history. If data health shows `Action needed`, look first for tickers
+with no price history or failed update rows.
 
 The main scripts print a start time, finish time, and elapsed seconds. Use these
 timing logs to see where runtime is being spent before changing any settings or

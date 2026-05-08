@@ -1,6 +1,11 @@
 """Tests for the daily process runner."""
 
-from scripts import run_daily_fast, run_daily_process, run_weekly_full
+from scripts import (
+    run_daily_fast,
+    run_daily_process,
+    run_weekly_full,
+    run_weekly_maintenance,
+)
 from scripts.run_daily_process import daily_steps
 
 
@@ -324,3 +329,44 @@ def test_run_weekly_full_includes_dividend_update() -> None:
         "Generate Excel report",
         "Send daily alert email",
     ]
+
+
+def test_weekly_maintenance_runs_expected_steps() -> None:
+    """Weekly maintenance should expose the existing weekly full workflow."""
+    step_names = [
+        step_name
+        for step_name, _step_function in run_weekly_maintenance.weekly_maintenance_steps()
+    ]
+
+    assert step_names == [
+        "Load universe",
+        "Update market data",
+        "Calculate moving averages",
+        "Detect crossovers",
+        "Calculate dividends",
+        "Calculate risk flags",
+        "Generate charts",
+        "Generate PDF report",
+        "Generate Excel report",
+        "Send daily alert email",
+    ]
+
+
+def test_weekly_maintenance_main_invokes_weekly_full(monkeypatch, capsys) -> None:
+    """The preferred weekly command should delegate to the working full process."""
+    calls = []
+
+    def fake_main():
+        calls.append("weekly_full_main")
+
+    monkeypatch.setattr(
+        run_weekly_maintenance.run_weekly_full,
+        "main",
+        fake_main,
+    )
+
+    run_weekly_maintenance.main()
+
+    captured = capsys.readouterr()
+    assert calls == ["weekly_full_main"]
+    assert "weekly full workflow" in captured.out
