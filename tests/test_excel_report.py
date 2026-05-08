@@ -3,7 +3,7 @@
 from datetime import date
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from scripts import generate_excel_report as generate_excel_report_script
 from market_sentinel.database.connection import open_duckdb_connection
@@ -14,6 +14,7 @@ from market_sentinel.reports.excel_report import (
     TRADE_CANDIDATE_POSITION_HEADERS,
     TRADE_CANDIDATE_REVIEW_HEADERS,
     _position_sizing_values,
+    apply_trade_candidate_position_sizing,
     generate_excel_report,
 )
 
@@ -325,7 +326,34 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     for header in TRADE_CANDIDATE_POSITION_HEADERS:
         assert header in trade_candidate_headers
     portfolio_status_column = trade_candidate_headers.index("Portfolio Status") + 1
+    planned_entry_column = trade_candidate_headers.index("Planned entry") + 1
+    planned_stop_column = trade_candidate_headers.index("Planned stop") + 1
+    planned_risk_column = trade_candidate_headers.index("Planned risk %") + 1
+    position_size_column = trade_candidate_headers.index("Position size") + 1
+    risk_per_unit_column = trade_candidate_headers.index("Risk per unit") + 1
+    max_risk_column = trade_candidate_headers.index("Max £ risk") + 1
+    position_value_column = trade_candidate_headers.index("Position value") + 1
+    review_decision_column = trade_candidate_headers.index("Review decision") + 1
+    review_notes_column = trade_candidate_headers.index("Review notes") + 1
+    reviewed_date_column = trade_candidate_headers.index("Reviewed date") + 1
     assert workbook["Trade Candidates"].cell(2, portfolio_status_column).value == "New"
+    planned_entry = workbook["Trade Candidates"].cell(2, planned_entry_column).value
+    planned_stop = workbook["Trade Candidates"].cell(2, planned_stop_column).value
+    assert planned_entry
+    assert planned_entry.startswith("=")
+    assert planned_stop
+    assert planned_stop.startswith("=")
+    assert workbook["Trade Candidates"].cell(2, planned_risk_column).value == 0.01
+    assert (
+        str(workbook["Trade Candidates"].cell(2, position_size_column).value)
+        .startswith("=IF(")
+    )
+    assert workbook["Trade Candidates"].cell(2, risk_per_unit_column).value.startswith("=")
+    assert workbook["Trade Candidates"].cell(2, max_risk_column).value.startswith("=")
+    assert workbook["Trade Candidates"].cell(2, position_value_column).value.startswith("=")
+    assert workbook["Trade Candidates"].cell(2, review_decision_column).value is None
+    assert workbook["Trade Candidates"].cell(2, review_notes_column).value is None
+    assert workbook["Trade Candidates"].cell(2, reviewed_date_column).value is None
 
 
 def test_trade_candidates_sheet_has_review_decision_values(
@@ -515,6 +543,78 @@ def test_invalid_position_sizing_stop_gives_safe_output() -> None:
     assert values[4] == ""
     assert values[5] == ""
     assert "Check stop" in values[6]
+
+
+def test_apply_trade_candidate_position_sizing_uses_worksheet_columns() -> None:
+    """Worksheet-level sizing should populate rows from actual headers."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Trade Candidates"
+    sheet.append(
+        [
+            "Ticker",
+            "Latest Close",
+            "Direction",
+            "20-day low reference",
+            "20-day high reference",
+            "50-day SMA reference",
+            "Review decision",
+            "Review notes",
+            "Reviewed date",
+        ]
+    )
+    sheet.append(["BULL", 120.0, "Bullish", 100.0, 130.0, 110.0, "", "", ""])
+    sheet.append(["BEAR", 80.0, "Bearish", 70.0, 95.0, 90.0, "", "", ""])
+
+    apply_trade_candidate_position_sizing(
+        sheet,
+        {
+            "position_sizing_trading_capital": 10000,
+            "position_sizing_risk_per_trade_percent": 1,
+        },
+    )
+    headers = [cell.value for cell in sheet[1]]
+    planned_entry_column = headers.index("Planned entry") + 1
+    planned_stop_column = headers.index("Planned stop") + 1
+    planned_risk_column = headers.index("Planned risk %") + 1
+    risk_per_unit_column = headers.index("Risk per unit") + 1
+    max_risk_column = headers.index("Max £ risk") + 1
+    position_size_column = headers.index("Position size") + 1
+    position_value_column = headers.index("Position value") + 1
+    review_decision_column = headers.index("Review decision") + 1
+    review_notes_column = headers.index("Review notes") + 1
+    reviewed_date_column = headers.index("Reviewed date") + 1
+
+    assert sheet.cell(2, planned_entry_column).value == '=IF(B2="","",B2)'
+    assert sheet.cell(2, planned_stop_column).value == '=IF(D2="","",D2)'
+    assert sheet.cell(3, planned_stop_column).value == '=IF(E3="","",E3)'
+    assert sheet.cell(2, planned_risk_column).value == 0.01
+    assert sheet.cell(2, risk_per_unit_column).value.startswith("=")
+    assert sheet.cell(2, max_risk_column).value.startswith("=")
+    assert sheet.cell(2, position_size_column).value.startswith("=")
+    assert sheet.cell(2, position_value_column).value.startswith("=")
+    assert sheet.cell(2, review_decision_column).value in (None, "")
+    assert sheet.cell(2, review_notes_column).value in (None, "")
+    assert sheet.cell(2, reviewed_date_column).value in (None, "")
+
+
+def test_apply_trade_candidate_position_sizing_notes_missing_stop() -> None:
+    """Rows with no stop source should get a Check stop note."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Trade Candidates"
+    sheet.append(["Ticker", "Latest Close", "Direction"])
+    sheet.append(["MISS", 120.0, "Bullish"])
+
+    apply_trade_candidate_position_sizing(sheet, {})
+    headers = [cell.value for cell in sheet[1]]
+    planned_stop_column = headers.index("Planned stop") + 1
+    position_size_column = headers.index("Position size") + 1
+    note_column = headers.index("Position sizing note") + 1
+
+    assert sheet.cell(2, planned_stop_column).value == ""
+    assert sheet.cell(2, position_size_column).value.startswith("=")
+    assert sheet.cell(2, note_column).value == "Check stop"
 
 
 def test_trade_journal_sheet_has_expected_columns(tmp_path: Path) -> None:

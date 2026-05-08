@@ -178,6 +178,7 @@ def generate_excel_report(
             trade_candidate_data,
             max_rows_per_sheet,
             limit_notes,
+            settings,
         )
         _write_position_sizing_sheet(workbook, settings)
         _write_trade_journal_sheet(workbook)
@@ -382,6 +383,7 @@ def _write_trade_candidates_sheet(
     table_data: Tuple[List[str], List[Sequence[Any]]],
     max_rows_per_sheet: int,
     limit_notes: List[str],
+    settings: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Create the Trade Candidates worksheet with review workflow columns."""
     sheet = workbook.create_sheet("Trade Candidates")
@@ -400,10 +402,221 @@ def _write_trade_candidates_sheet(
         for row in visible_rows
     ]
     _write_rows(sheet, [workflow_headers] + workflow_rows)
-    _add_review_decision_validation(sheet, workflow_headers)
-    _add_trade_candidate_conditional_formatting(sheet, workflow_headers)
-    _format_trade_candidate_position_columns(sheet, workflow_headers)
+    apply_trade_candidate_position_sizing(sheet, settings or {})
+    worksheet_headers = [cell.value for cell in sheet[1]]
+    _add_review_decision_validation(sheet, worksheet_headers)
+    _add_trade_candidate_conditional_formatting(sheet, worksheet_headers)
+    _format_trade_candidate_position_columns(sheet, worksheet_headers)
     _auto_size_columns(sheet)
+
+
+def apply_trade_candidate_position_sizing(
+    sheet,
+    settings: Dict[str, Any],
+) -> None:
+    """Apply position sizing formulas directly to worksheet data rows."""
+    sizing_settings = _position_sizing_settings(settings)
+    header_to_column = _worksheet_header_map(sheet)
+    for header in [
+        "Planned entry",
+        "Planned stop",
+        "Planned risk %",
+        "Risk per unit",
+        "Max £ risk",
+        "Position size",
+        "Position value",
+        "Position sizing note",
+    ]:
+        _ensure_worksheet_column(sheet, header, header_to_column)
+
+    latest_close_column = _find_column(
+        header_to_column,
+        ["Latest Close", "latest close", "Latest close", "Close", "Latest Price"],
+    )
+    direction_column = _find_column(
+        header_to_column,
+        [
+            "Action grade",
+            "Action Grade",
+            "Direction",
+            "direction",
+            "Signal",
+            "signal",
+            "Setup",
+            "setup",
+        ],
+    )
+    low_column = _find_column(
+        header_to_column,
+        [
+            "20-day low reference",
+            "20 Day Low",
+            "20-day low",
+            "20d low",
+            "20-day Low/High Reference",
+        ],
+    )
+    high_column = _find_column(
+        header_to_column,
+        [
+            "20-day high reference",
+            "20 Day High",
+            "20-day high",
+            "20d high",
+            "20-day Low/High Reference",
+        ],
+    )
+    sma_column = _find_column(
+        header_to_column,
+        ["50-day SMA reference", "50-day SMA", "50 Day SMA"],
+    )
+    risk_decimal = sizing_settings["risk_per_trade_percent"] / 100
+    capital = sizing_settings["trading_capital"]
+    populated_rows = 0
+
+    for row_number in range(2, sheet.max_row + 1):
+        direction_value = _cell_value(sheet, row_number, direction_column)
+        stop_source_column = _stop_source_column(
+            direction_value,
+            low_column,
+            high_column,
+            sma_column,
+        )
+        latest_close_value = _cell_value(sheet, row_number, latest_close_column)
+        stop_source_value = _cell_value(sheet, row_number, stop_source_column)
+        notes = _worksheet_position_notes(latest_close_value, stop_source_value)
+
+        entry_cell = sheet.cell(row_number, header_to_column["planned entry"])
+        stop_cell = sheet.cell(row_number, header_to_column["planned stop"])
+        risk_percent_cell = sheet.cell(row_number, header_to_column["planned risk %"])
+        risk_per_unit_cell = sheet.cell(row_number, header_to_column["risk per unit"])
+        max_risk_cell = sheet.cell(row_number, header_to_column["max gbp risk"])
+        position_size_cell = sheet.cell(row_number, header_to_column["position size"])
+        position_value_cell = sheet.cell(row_number, header_to_column["position value"])
+        note_cell = sheet.cell(row_number, header_to_column["position sizing note"])
+
+        entry_cell.value = _copy_cell_formula(latest_close_column, row_number)
+        stop_cell.value = _copy_cell_formula(stop_source_column, row_number)
+        risk_percent_cell.value = risk_decimal
+        risk_per_unit_cell.value = (
+            f'=IF(OR({entry_cell.coordinate}="",{stop_cell.coordinate}=""),"",'
+            f"ABS({entry_cell.coordinate}-{stop_cell.coordinate}))"
+        )
+        max_risk_cell.value = f"={float(capital):.2f}*{risk_percent_cell.coordinate}"
+        position_size_cell.value = (
+            f'=IF(OR({entry_cell.coordinate}="",{stop_cell.coordinate}="",'
+            f'{risk_per_unit_cell.coordinate}="",{risk_per_unit_cell.coordinate}=0),'
+            f'"",FLOOR({max_risk_cell.coordinate}/{risk_per_unit_cell.coordinate},1))'
+        )
+        position_value_cell.value = (
+            f'=IF(OR({position_size_cell.coordinate}="",{entry_cell.coordinate}=""),'
+            f'"",{position_size_cell.coordinate}*{entry_cell.coordinate})'
+        )
+        note_cell.value = " | ".join(notes)
+        populated_rows += 1
+
+    _format_trade_candidate_position_columns(sheet, [cell.value for cell in sheet[1]])
+    print(f"Trade Candidates rows found: {max(sheet.max_row - 1, 0)}")
+    print(f"Position sizing rows populated: {populated_rows}")
+    print(
+        "Planned entry column: "
+        f"{get_column_letter(header_to_column['planned entry'])}"
+    )
+    print(
+        "Planned stop column: "
+        f"{get_column_letter(header_to_column['planned stop'])}"
+    )
+    print(
+        "Planned risk column: "
+        f"{get_column_letter(header_to_column['planned risk %'])}"
+    )
+    print(
+        "Position size column: "
+        f"{get_column_letter(header_to_column['position size'])}"
+    )
+
+
+def _worksheet_header_map(sheet) -> Dict[str, int]:
+    """Return a normalized worksheet header map."""
+    return {
+        _normalise_header(cell.value): cell.column
+        for cell in sheet[1]
+        if cell.value not in (None, "")
+    }
+
+
+def _ensure_worksheet_column(sheet, header: str, header_to_column: Dict[str, int]) -> None:
+    """Create an output column when it is missing."""
+    key = _normalise_header(header)
+    if key in header_to_column:
+        return
+
+    column_number = sheet.max_column + 1
+    cell = sheet.cell(1, column_number)
+    cell.value = header
+    cell.font = HEADER_FONT
+    cell.fill = HEADER_FILL
+    header_to_column[key] = column_number
+
+
+def _find_column(header_to_column: Dict[str, int], aliases: Sequence[str]) -> Optional[int]:
+    """Find a worksheet column using flexible header aliases."""
+    for alias in aliases:
+        column = header_to_column.get(_normalise_header(alias))
+        if column is not None:
+            return column
+    return None
+
+
+def _normalise_header(value: Any) -> str:
+    """Normalize worksheet headers for flexible matching."""
+    return str(value or "").strip().lower().replace("£", "gbp")
+
+
+def _cell_value(sheet, row_number: int, column_number: Optional[int]) -> Any:
+    """Return a worksheet cell value when the column is available."""
+    if column_number is None:
+        return None
+
+    value = sheet.cell(row_number, column_number).value
+    return None if value == "" else value
+
+
+def _copy_cell_formula(column_number: Optional[int], row_number: int) -> str:
+    """Return a formula that copies a same-row source cell or stays blank."""
+    if column_number is None:
+        return ""
+
+    source_cell = f"{get_column_letter(column_number)}{row_number}"
+    return f'=IF({source_cell}="","",{source_cell})'
+
+
+def _stop_source_column(
+    direction_value: Any,
+    low_column: Optional[int],
+    high_column: Optional[int],
+    sma_column: Optional[int],
+) -> Optional[int]:
+    """Choose the best stop/reference source column for the row."""
+    direction_text = str(direction_value or "").strip().lower()
+
+    if "bullish" in direction_text or "buy" in direction_text:
+        return low_column or sma_column
+
+    if "bearish" in direction_text or "sell" in direction_text:
+        return high_column or sma_column
+
+    return sma_column
+
+
+def _worksheet_position_notes(latest_close: Any, stop_source: Any) -> List[str]:
+    """Return safe notes for missing worksheet planning inputs."""
+    notes = []
+    if latest_close in (None, ""):
+        notes.append("Missing latest close")
+    if stop_source in (None, ""):
+        notes.append("Check stop")
+    return notes
 
 
 def _write_rows(sheet, rows: Iterable[Sequence[Any]]) -> None:
@@ -482,15 +695,20 @@ def _format_trade_candidate_position_columns(sheet, headers: Sequence[str]) -> N
     currency_headers = {
         "Planning entry price",
         "Planning stop price",
+        "Planned entry",
+        "Planned stop",
         "Risk per unit",
         "Max £ risk",
         "Position value",
     }
-    integer_headers = {"Suggested position size"}
+    percent_headers = {"Planned risk %"}
+    integer_headers = {"Suggested position size", "Position size"}
 
     for column_index, header in enumerate(headers, start=1):
         if header in currency_headers:
             number_format = "£#,##0.00"
+        elif header in percent_headers:
+            number_format = "0.00%"
         elif header in integer_headers:
             number_format = "0"
         else:
