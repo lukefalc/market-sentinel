@@ -148,10 +148,121 @@ def _index_page_flowables(
         Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
         Spacer(1, 8),
         Paragraph(summary_text, styles["Normal"]),
+        *(_daily_action_summary_flowables(chart_details, styles) if detail_count else []),
         *(_portfolio_market_count_flowables(chart_details, styles) if detail_count else []),
         Spacer(1, 12),
         _index_tables(chart_details),
     ]
+
+
+def _daily_action_summary_flowables(
+    chart_details: Sequence[Dict[str, Any]],
+    styles,
+) -> List[Any]:
+    """Return a compact first-page Daily Action Summary."""
+    summary = _daily_action_summary(chart_details)
+    rows = [
+        [
+            "Total",
+            "Strong Buy",
+            "Strong Sell",
+            "Held",
+            "Watchlist",
+            "New",
+            "S&P 500",
+            "FTSE 350",
+            "Top score",
+            "Dividend risk",
+        ],
+        [
+            summary["total"],
+            summary["strong_buy"],
+            summary["strong_sell"],
+            summary["held"],
+            summary["watchlist"],
+            summary["new"],
+            summary["sp_500"],
+            summary["ftse_350"],
+            summary["highest_score_candidate"],
+            summary["dividend_risk_flags"],
+        ],
+    ]
+    table = Table(rows, colWidths=[42, 58, 58, 42, 58, 42, 52, 52, 118, 62])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9EAF7")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return [
+        Spacer(1, 8),
+        Paragraph("Daily Action Summary", styles["Heading3"]),
+        table,
+    ]
+
+
+def _daily_action_summary(chart_details: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return PDF Daily Action Summary counts for included candidates."""
+    summary = {
+        "total": len(chart_details),
+        "strong_buy": 0,
+        "strong_sell": 0,
+        "held": 0,
+        "watchlist": 0,
+        "new": 0,
+        "sp_500": 0,
+        "ftse_350": 0,
+        "highest_score_candidate": "Not available",
+        "dividend_risk_flags": 0,
+    }
+    highest_detail = None
+    highest_score = None
+
+    for chart_detail in chart_details:
+        candidate = chart_detail.get("trade_candidate") or {}
+        grade = candidate.get("action_grade")
+        market = _market_marker(chart_detail.get("market"), chart_detail.get("ticker", ""))
+        status = _candidate_portfolio_status(chart_detail)
+        score = _score_value(candidate.get("score"))
+
+        if grade == "Strong Buy Setup":
+            summary["strong_buy"] += 1
+        elif grade == "Strong Sell Setup":
+            summary["strong_sell"] += 1
+
+        if status in {"Held", "Held + Watchlist"}:
+            summary["held"] += 1
+        elif status == "Watchlist":
+            summary["watchlist"] += 1
+        else:
+            summary["new"] += 1
+
+        if market == "S&P 500":
+            summary["sp_500"] += 1
+        elif market == "FTSE 350":
+            summary["ftse_350"] += 1
+
+        if candidate.get("dividend_risk_flag"):
+            summary["dividend_risk_flags"] += 1
+
+        if highest_score is None or score > highest_score:
+            highest_score = score
+            highest_detail = chart_detail
+
+    if highest_detail is not None:
+        candidate = highest_detail.get("trade_candidate") or {}
+        summary["highest_score_candidate"] = (
+            f"{highest_detail.get('ticker', '')} ({_score_value(candidate.get('score')):g})"
+        )
+
+    return summary
 
 
 def _portfolio_market_count_flowables(

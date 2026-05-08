@@ -14,6 +14,7 @@ from market_sentinel.reports.excel_report import (
     TRADE_CANDIDATE_POSITION_HEADERS,
     TRADE_CANDIDATE_REVIEW_HEADERS,
     _position_sizing_values,
+    _trade_candidate_summary_rows,
     apply_trade_candidate_position_sizing,
     generate_excel_report,
 )
@@ -274,6 +275,11 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert summary_values["Securities"] == 2
     assert summary_values["Securities With Dividend Metrics"] == 2
     assert summary_values["Dividend Risk Flags"] == 1
+    assert "Daily Action Summary" in summary_values
+    assert summary_values["Total candidates"] == 2
+    assert summary_values["S&P 500 candidates"] == 1
+    assert summary_values["FTSE 350 candidates"] == 1
+    assert summary_values["Candidates with dividend risk flag"] == 1
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["B1"].value == "Market"
@@ -384,6 +390,113 @@ def test_trade_candidates_sheet_has_review_decision_values(
         assert decision in validation_text
 
     assert validations
+
+
+def test_excel_daily_action_summary_counts_fake_candidates() -> None:
+    """Daily Action Summary should count grade, market, portfolio, and risk rows."""
+    rows = [
+        (
+            "AAA",
+            "Example A",
+            "S&P 500",
+            "Bullish",
+            "Strong Buy Setup",
+            8,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "",
+            "Held",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            10,
+            1000,
+            "",
+        ),
+        (
+            "BBB",
+            "Example B",
+            "FTSE 350",
+            "Bearish",
+            "Strong Sell Setup",
+            7,
+            None,
+            "Today",
+            "",
+            80,
+            85,
+            90,
+            96,
+            "DIVIDEND_TRAP_RISK",
+            "Watchlist",
+            "",
+            "",
+            "",
+            80,
+            90,
+            10,
+            100,
+            0,
+            0,
+            "Check stop",
+        ),
+        (
+            "CCC",
+            "Example C",
+            "FTSE 350",
+            "Bullish",
+            "Strong Buy Setup",
+            9,
+            None,
+            "Today",
+            "",
+            50,
+            45,
+            44,
+            40,
+            "",
+            "New",
+            "",
+            "",
+            "",
+            50,
+            44,
+            6,
+            100,
+            16,
+            800,
+            "",
+        ),
+    ]
+    summary = dict(_trade_candidate_summary_rows(rows))
+
+    assert summary["Total candidates"] == 3
+    assert summary["Strong Buy Setup count"] == 2
+    assert summary["Strong Sell Setup count"] == 1
+    assert summary["Held candidates"] == 1
+    assert summary["Watchlist candidates"] == 1
+    assert summary["New candidates"] == 1
+    assert summary["S&P 500 candidates"] == 1
+    assert summary["FTSE 350 candidates"] == 2
+    assert summary["Average score"] == 8.0
+    assert summary["Highest score candidate"] == "CCC (9)"
+    assert summary["Candidates with dividend risk flag"] == 1
+    assert summary["Candidates with position size = 0"] == 1
+    assert summary["1. Held candidates with Strong Sell Setup"] == 0
+    assert summary["2. Watchlist candidates with Strong Buy Setup"] == 0
+    assert summary["3. New candidates with score >= 7"] == 1
+    assert summary[
+        "4. Candidates with position size = 0 requiring stop/risk review"
+    ] == 1
 
 
 def test_trade_candidates_sheet_sorts_by_portfolio_status(

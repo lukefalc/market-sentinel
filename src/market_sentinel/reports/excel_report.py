@@ -326,18 +326,43 @@ def _write_summary_sheet(
 def _trade_candidate_summary_rows(
     trade_candidate_rows: Sequence[Sequence[Any]],
 ) -> List[Sequence[Any]]:
-    """Return compact Trade Candidate counts for the Summary worksheet."""
+    """Return Daily Action Summary rows for the Summary worksheet."""
+    total_candidates = len(trade_candidate_rows)
+    strong_buy_count = 0
+    strong_sell_count = 0
     portfolio_counts = {
         "Held candidates": 0,
         "Watchlist candidates": 0,
         "New candidates": 0,
     }
     market_counts: Dict[str, int] = {}
+    score_total = 0.0
+    scored_count = 0
+    highest_score = None
+    highest_score_ticker = "Not available"
+    dividend_risk_count = 0
+    zero_position_size_count = 0
+    priority_counts = {
+        "Held candidates with Strong Sell Setup": 0,
+        "Watchlist candidates with Strong Buy Setup": 0,
+        "New candidates with score >= 7": 0,
+        "Candidates with position size = 0 requiring stop/risk review": 0,
+    }
 
     for row in trade_candidate_rows:
+        ticker = str(row[0] or "")
         market = str(row[2] or "Market unknown")
+        grade = str(row[4] or "")
+        score = _numeric_value(row[5])
         portfolio_status = str(row[14] or "New")
+        dividend_risk_flag = row[13]
+        position_size = row[22] if len(row) > 22 else None
         market_counts[market] = market_counts.get(market, 0) + 1
+
+        if grade == "Strong Buy Setup":
+            strong_buy_count += 1
+        elif grade == "Strong Sell Setup":
+            strong_sell_count += 1
 
         if portfolio_status in {"Held", "Held + Watchlist"}:
             portfolio_counts["Held candidates"] += 1
@@ -346,15 +371,73 @@ def _trade_candidate_summary_rows(
         else:
             portfolio_counts["New candidates"] += 1
 
+        if score is not None:
+            score_total += score
+            scored_count += 1
+            if highest_score is None or score > highest_score:
+                highest_score = score
+                highest_score_ticker = f"{ticker} ({score:g})"
+
+        if dividend_risk_flag:
+            dividend_risk_count += 1
+
+        if position_size == 0:
+            zero_position_size_count += 1
+
+        if portfolio_status in {"Held", "Held + Watchlist"} and grade == "Strong Sell Setup":
+            priority_counts["Held candidates with Strong Sell Setup"] += 1
+        if portfolio_status == "Watchlist" and grade == "Strong Buy Setup":
+            priority_counts["Watchlist candidates with Strong Buy Setup"] += 1
+        if portfolio_status == "New" and score is not None and score >= 7:
+            priority_counts["New candidates with score >= 7"] += 1
+        if position_size == 0:
+            priority_counts[
+                "Candidates with position size = 0 requiring stop/risk review"
+            ] += 1
+
+    average_score = round(score_total / scored_count, 2) if scored_count else 0
+
     return [
         ("", ""),
-        ("Trade Candidate Review", ""),
+        ("Daily Action Summary", ""),
+        ("Total candidates", total_candidates),
+        ("Strong Buy Setup count", strong_buy_count),
+        ("Strong Sell Setup count", strong_sell_count),
         ("Held candidates", portfolio_counts["Held candidates"]),
         ("Watchlist candidates", portfolio_counts["Watchlist candidates"]),
         ("New candidates", portfolio_counts["New candidates"]),
         ("S&P 500 candidates", market_counts.get("S&P 500", 0)),
         ("FTSE 350 candidates", market_counts.get("FTSE 350", 0)),
+        ("Average score", average_score),
+        ("Highest score candidate", highest_score_ticker),
+        ("Candidates with dividend risk flag", dividend_risk_count),
+        ("Candidates with position size = 0", zero_position_size_count),
+        ("", ""),
+        ("Review priorities", ""),
+        ("1. Held candidates with Strong Sell Setup", priority_counts[
+            "Held candidates with Strong Sell Setup"
+        ]),
+        ("2. Watchlist candidates with Strong Buy Setup", priority_counts[
+            "Watchlist candidates with Strong Buy Setup"
+        ]),
+        ("3. New candidates with score >= 7", priority_counts[
+            "New candidates with score >= 7"
+        ]),
+        (
+            "4. Candidates with position size = 0 requiring stop/risk review",
+            priority_counts[
+                "Candidates with position size = 0 requiring stop/risk review"
+            ],
+        ),
     ]
+
+
+def _numeric_value(value: Any) -> Optional[float]:
+    """Return a numeric value when possible."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _write_table_sheet(

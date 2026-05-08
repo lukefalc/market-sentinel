@@ -14,6 +14,7 @@ from market_sentinel.reports.pdf_report import (
     PDF_CHART_WIDTH,
     _candidate_card_flowable,
     _chart_flowables,
+    _daily_action_summary,
     _index_page_flowables,
     _index_rows,
     _included_chart_details,
@@ -852,8 +853,57 @@ def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
         "Included: Held: 1 | Watchlist: 1 | New: 1 | S&P 500: 1 | FTSE 350: 2"
         in _flowable_text(flowables)
     )
+    assert "Daily Action Summary" in _flowable_text(flowables)
+    assert "Strong Buy" in _flowable_text(flowables)
+    assert "Top score" in _flowable_text(flowables)
     assert "Held / Held + Watchlist" in _flowable_text(flowables)
     assert "New candidates" in _flowable_text(flowables)
+
+
+def test_pdf_daily_action_summary_counts_candidates(tmp_path: Path) -> None:
+    """PDF Daily Action Summary should count included setup details."""
+    chart_details = [
+        sample_chart_detail(
+            "AAA",
+            tmp_path / "AAA.png",
+            action_grade="Strong Buy Setup",
+            score=9,
+            market="S&P 500",
+            portfolio_status="Held",
+        ),
+        sample_chart_detail(
+            "BBB.L",
+            tmp_path / "BBB.png",
+            action_grade="Strong Sell Setup",
+            score=7,
+            market="FTSE 350",
+            portfolio_status="Watchlist",
+            holding_quantity="",
+        ),
+        sample_chart_detail(
+            "CCC.L",
+            tmp_path / "CCC.png",
+            action_grade="Strong Buy Setup",
+            score=8,
+            market="FTSE 350",
+            portfolio_status="New",
+            holding_quantity="",
+        ),
+    ]
+    chart_details[1]["trade_candidate"]["dividend_risk_flag"] = "DIVIDEND_TRAP_RISK"
+
+    summary = _daily_action_summary(chart_details)
+
+    assert summary["total"] == 3
+    assert summary["strong_buy"] == 2
+    assert summary["strong_sell"] == 1
+    assert summary["held"] == 1
+    assert summary["watchlist"] == 1
+    assert summary["new"] == 1
+    assert summary["sp_500"] == 1
+    assert summary["ftse_350"] == 2
+    assert summary["highest_score_candidate"] == "AAA (9)"
+    assert summary["dividend_risk_flags"] == 1
 
 
 def test_pdf_index_order_matches_market_balanced_chart_page_order(

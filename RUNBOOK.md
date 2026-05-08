@@ -376,6 +376,9 @@ Excel reports are saved here:
 The Excel workbook is the detailed decision workbook. It keeps the existing
 data tabs and also includes:
 
+- `Summary`: a Daily Action Summary with candidate counts by setup grade,
+  portfolio status, market, dividend risk flags, highest score, position-size
+  review checks, and review-priority counts.
 - `Trade Candidates`: all recent crossover candidates, including every action
   grade, sorted from strong buy setups through strong sell setups. Use Trade
   Candidates for daily review. Use Trade Journal for permanent decisions and
