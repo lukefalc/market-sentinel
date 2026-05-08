@@ -5,6 +5,7 @@ workbook using openpyxl. It does not create PDF reports.
 """
 
 from datetime import date, datetime, timedelta
+from math import floor
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -29,6 +30,9 @@ from market_sentinel.config.loader import load_named_config
 DEFAULT_OUTPUT_DIR = Path("outputs") / "excel"
 DEFAULT_MAX_ROWS_PER_SHEET = 50000
 DEFAULT_MOVING_AVERAGE_RECENT_DAYS = 10
+DEFAULT_POSITION_SIZING_TRADING_CAPITAL = 10000
+DEFAULT_POSITION_SIZING_RISK_PER_TRADE_PERCENT = 1
+DEFAULT_POSITION_SIZING_STOP_METHOD = "20-day reference"
 EXCEL_MAX_DATA_ROWS = 1048575
 EXPECTED_WORKSHEET_TITLES = [
     "Summary",
@@ -69,6 +73,15 @@ TRADE_CANDIDATE_REVIEW_HEADERS = [
     "Planned risk %",
     "Position size",
     "Reviewed date",
+]
+TRADE_CANDIDATE_POSITION_HEADERS = [
+    "Planning entry price",
+    "Planning stop price",
+    "Risk per unit",
+    "Max £ risk",
+    "Suggested position size",
+    "Position value",
+    "Position sizing note",
 ]
 
 
@@ -166,7 +179,7 @@ def generate_excel_report(
             max_rows_per_sheet,
             limit_notes,
         )
-        _write_position_sizing_sheet(workbook)
+        _write_position_sizing_sheet(workbook, settings)
         _write_trade_journal_sheet(workbook)
         _write_summary_sheet(
             summary_sheet,
@@ -234,6 +247,47 @@ def _positive_int_setting(
         return default_value
 
     return parsed_value
+
+
+def _positive_float_setting(
+    settings: Dict[str, Any],
+    setting_name: str,
+    default_value: float,
+) -> float:
+    """Read a positive float setting with a safe fallback."""
+    raw_value = settings.get(setting_name, default_value)
+
+    try:
+        parsed_value = float(raw_value)
+    except (TypeError, ValueError):
+        return default_value
+
+    if parsed_value <= 0:
+        return default_value
+
+    return parsed_value
+
+
+def _position_sizing_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Return configurable default position sizing values."""
+    return {
+        "trading_capital": _positive_float_setting(
+            settings,
+            "position_sizing_trading_capital",
+            DEFAULT_POSITION_SIZING_TRADING_CAPITAL,
+        ),
+        "risk_per_trade_percent": _positive_float_setting(
+            settings,
+            "position_sizing_risk_per_trade_percent",
+            DEFAULT_POSITION_SIZING_RISK_PER_TRADE_PERCENT,
+        ),
+        "default_stop_method": str(
+            settings.get(
+                "position_sizing_default_stop_method",
+                DEFAULT_POSITION_SIZING_STOP_METHOD,
+            )
+        ),
+    }
 
 
 def _write_summary_sheet(
@@ -348,6 +402,7 @@ def _write_trade_candidates_sheet(
     _write_rows(sheet, [workflow_headers] + workflow_rows)
     _add_review_decision_validation(sheet, workflow_headers)
     _add_trade_candidate_conditional_formatting(sheet, workflow_headers)
+    _format_trade_candidate_position_columns(sheet, workflow_headers)
     _auto_size_columns(sheet)
 
 
@@ -422,13 +477,50 @@ def _add_trade_candidate_conditional_formatting(
     )
 
 
-def _write_position_sizing_sheet(workbook: Workbook) -> None:
+def _format_trade_candidate_position_columns(sheet, headers: Sequence[str]) -> None:
+    """Apply readable number formats to position planning columns."""
+    currency_headers = {
+        "Planning entry price",
+        "Planning stop price",
+        "Risk per unit",
+        "Max £ risk",
+        "Position value",
+    }
+    integer_headers = {"Suggested position size"}
+
+    for column_index, header in enumerate(headers, start=1):
+        if header in currency_headers:
+            number_format = "£#,##0.00"
+        elif header in integer_headers:
+            number_format = "0"
+        else:
+            continue
+
+        for row in range(2, sheet.max_row + 1):
+            sheet.cell(row, column_index).number_format = number_format
+
+
+def _write_position_sizing_sheet(
+    workbook: Workbook,
+    settings: Optional[Dict[str, Any]] = None,
+) -> None:
     """Create a beginner-friendly position sizing calculator sheet."""
+    sizing_settings = _position_sizing_settings(settings or {})
+    trading_capital = sizing_settings["trading_capital"]
+    risk_decimal = sizing_settings["risk_per_trade_percent"] / 100
     sheet = workbook.create_sheet("Position Sizing")
     rows = [
         ("Planning calculator", "Value", "Notes"),
-        ("Trading capital", 10000, "Example only - edit this input"),
-        ("Risk per trade %", 0.01, "Example 1% - edit this input"),
+        (
+            "Trading capital",
+            trading_capital,
+            "Editable example default used for Trade Candidates planning",
+        ),
+        (
+            "Risk per trade %",
+            risk_decimal,
+            "Editable example default used for Trade Candidates planning",
+        ),
         ("Entry price", 100, "Example only - edit this input"),
         ("Stop price", 95, "Example only - edit this input"),
         ("Maximum £ risk", "=B2*B3", "Trading capital times risk per trade"),
@@ -440,7 +532,11 @@ def _write_position_sizing_sheet(workbook: Workbook) -> None:
         ),
         (
             "Note",
-            "This is a planning calculator, not financial advice.",
+            (
+                "Position sizing is a planning calculation only. It does not "
+                "account for fees, slippage, taxes, liquidity, or personal "
+                "circumstances."
+            ),
             "",
         ),
     ]
@@ -858,7 +954,9 @@ def _fetch_trade_candidates(
         "Holding Quantity",
         "Watchlist Reason",
         "Risk Notes",
+        *TRADE_CANDIDATE_POSITION_HEADERS,
     ]
+    sizing_settings = _position_sizing_settings(_load_excel_settings(config_dir))
     raw_rows = connection.execute(
         """
         SELECT
@@ -897,6 +995,11 @@ def _fetch_trade_candidates(
             continue
 
         review_levels = candidate.get("review_levels", {})
+        position_sizing = _position_sizing_values(
+            candidate,
+            review_levels,
+            sizing_settings,
+        )
         rows.append(
             (
                 candidate.get("ticker"),
@@ -917,11 +1020,99 @@ def _fetch_trade_candidates(
                 candidate.get("holding_quantity") or "",
                 candidate.get("watchlist_reason") or "",
                 " | ".join(candidate.get("risk_notes", [])),
+                *position_sizing,
             )
         )
 
     rows.sort(key=_trade_candidate_sort_key)
     return headers, rows
+
+
+def _position_sizing_values(
+    candidate: Dict[str, Any],
+    review_levels: Dict[str, Any],
+    sizing_settings: Dict[str, Any],
+) -> Tuple[Any, Any, Any, Any, Any, Any, str]:
+    """Calculate risk-planning position sizing values for one candidate."""
+    entry_price = candidate.get("latest_close_price")
+    direction = candidate.get("signal_direction")
+    stop_price, stop_label = _planning_stop_price(direction, review_levels)
+    max_risk = (
+        sizing_settings["trading_capital"]
+        * sizing_settings["risk_per_trade_percent"]
+        / 100
+    )
+    risk_per_unit = _risk_per_unit(direction, entry_price, stop_price)
+
+    if risk_per_unit is None or risk_per_unit <= 0:
+        return (
+            entry_price,
+            stop_price,
+            "",
+            round(max_risk, 2),
+            "",
+            "",
+            "Check stop - risk per unit is not positive.",
+        )
+
+    suggested_size = floor(max_risk / risk_per_unit)
+    position_value = suggested_size * float(entry_price)
+    note = (
+        f"Risk planning using {stop_label}. Planning calculation only; "
+        "does not account for fees, slippage, taxes, liquidity, or personal "
+        "circumstances."
+    )
+
+    return (
+        entry_price,
+        stop_price,
+        round(risk_per_unit, 2),
+        round(max_risk, 2),
+        suggested_size,
+        round(position_value, 2),
+        note,
+    )
+
+
+def _planning_stop_price(
+    direction: Any,
+    review_levels: Dict[str, Any],
+) -> Tuple[Any, str]:
+    """Return the default planning stop price and label for a direction."""
+    if direction == "Bullish":
+        if review_levels.get("20-day low") is not None:
+            return review_levels.get("20-day low"), "20-day reference"
+        if review_levels.get("50-day SMA") is not None:
+            return review_levels.get("50-day SMA"), "50-day SMA fallback"
+
+    if direction == "Bearish":
+        if review_levels.get("20-day high") is not None:
+            return review_levels.get("20-day high"), "20-day reference"
+        if review_levels.get("50-day SMA") is not None:
+            return review_levels.get("50-day SMA"), "50-day SMA fallback"
+
+    return None, "no available stop reference"
+
+
+def _risk_per_unit(
+    direction: Any,
+    entry_price: Any,
+    stop_price: Any,
+) -> Optional[float]:
+    """Calculate directional risk per unit when prices are valid."""
+    try:
+        entry = float(entry_price)
+        stop = float(stop_price)
+    except (TypeError, ValueError):
+        return None
+
+    if direction == "Bullish":
+        return entry - stop
+
+    if direction == "Bearish":
+        return stop - entry
+
+    return None
 
 
 def _twenty_day_reference(candidate: Dict[str, Any]) -> Any:

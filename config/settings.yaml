@@ -57,6 +57,9 @@ portfolio_priority_order:
   - Held
   - Watchlist
   - New
+position_sizing_trading_capital: 10000
+position_sizing_risk_per_trade_percent: 1
+position_sizing_default_stop_method: "20-day reference"
 pdf_include_setup_grades:
   - Strong Buy Setup
   - Strong Sell Setup

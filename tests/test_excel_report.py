@@ -11,7 +11,9 @@ from market_sentinel.database.schema import initialise_database_schema
 from market_sentinel.reports.excel_report import (
     EXPECTED_WORKSHEET_TITLES,
     REVIEW_DECISION_VALUES,
+    TRADE_CANDIDATE_POSITION_HEADERS,
     TRADE_CANDIDATE_REVIEW_HEADERS,
+    _position_sizing_values,
     generate_excel_report,
 )
 
@@ -320,6 +322,8 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert "Review decision" in trade_candidate_headers
     assert "Planned stop" in trade_candidate_headers
     assert "Position size" in trade_candidate_headers
+    for header in TRADE_CANDIDATE_POSITION_HEADERS:
+        assert header in trade_candidate_headers
     portfolio_status_column = trade_candidate_headers.index("Portfolio Status") + 1
     assert workbook["Trade Candidates"].cell(2, portfolio_status_column).value == "New"
 
@@ -440,9 +444,77 @@ def test_position_sizing_sheet_has_expected_labels_and_formulas(
     assert sheet["B7"].value == "=ABS(B4-B5)"
     assert sheet["A8"].value == "Suggested position size"
     assert sheet["B8"].value == '=IF(B7=0,"Check entry/stop",ROUNDDOWN(B6/B7,0))'
-    assert "not financial advice" in sheet["B9"].value
+    assert "Position sizing is a planning calculation only" in sheet["B9"].value
+    assert "fees, slippage, taxes, liquidity" in sheet["B9"].value
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref is not None
+
+
+def test_bullish_position_sizing_calculation() -> None:
+    """Bullish sizing should use entry minus 20-day low risk."""
+    values = _position_sizing_values(
+        {
+            "signal_direction": "Bullish",
+            "latest_close_price": 119.0,
+        },
+        {
+            "20-day low": 100.0,
+            "50-day SMA": 110.0,
+        },
+        {
+            "trading_capital": 10000,
+            "risk_per_trade_percent": 1,
+            "default_stop_method": "20-day reference",
+        },
+    )
+
+    assert values[:6] == (119.0, 100.0, 19.0, 100.0, 5, 595.0)
+    assert "planning" in values[6].lower()
+
+
+def test_bearish_position_sizing_calculation() -> None:
+    """Bearish sizing should use 20-day high minus entry risk."""
+    values = _position_sizing_values(
+        {
+            "signal_direction": "Bearish",
+            "latest_close_price": 80.0,
+        },
+        {
+            "20-day high": 95.0,
+            "50-day SMA": 90.0,
+        },
+        {
+            "trading_capital": 10000,
+            "risk_per_trade_percent": 1,
+            "default_stop_method": "20-day reference",
+        },
+    )
+
+    assert values[:6] == (80.0, 95.0, 15.0, 100.0, 6, 480.0)
+
+
+def test_invalid_position_sizing_stop_gives_safe_output() -> None:
+    """Invalid stop levels should avoid producing a misleading size."""
+    values = _position_sizing_values(
+        {
+            "signal_direction": "Bullish",
+            "latest_close_price": 100.0,
+        },
+        {
+            "20-day low": 105.0,
+            "50-day SMA": 95.0,
+        },
+        {
+            "trading_capital": 10000,
+            "risk_per_trade_percent": 1,
+            "default_stop_method": "20-day reference",
+        },
+    )
+
+    assert values[2] == ""
+    assert values[4] == ""
+    assert values[5] == ""
+    assert "Check stop" in values[6]
 
 
 def test_trade_journal_sheet_has_expected_columns(tmp_path: Path) -> None:

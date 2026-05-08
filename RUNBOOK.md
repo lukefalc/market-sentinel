@@ -389,6 +389,12 @@ data tabs and also includes:
 
 The position sizing sheet is a planning calculator, not financial advice. The
 example values are placeholders to edit before using the workbook for review.
+Trade Candidates also includes automated position sizing columns. The planning
+entry defaults to latest close, the planning stop defaults to the 20-day
+reference level with a 50-day SMA fallback, and suggested size uses the
+configured example capital and risk percentage. Position sizing is a planning
+calculation only. It does not account for fees, slippage, taxes, liquidity, or
+personal circumstances.
 The generated workbook can be refreshed each run, so keep lasting review notes,
 decisions, and outcomes in `Trade Journal`.
 Ticker-level workbook sheets include a `Market` column so S&P 500 and FTSE 350
