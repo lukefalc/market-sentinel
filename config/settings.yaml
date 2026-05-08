@@ -11,6 +11,7 @@ price_daily_lookback_days: 10
 price_update_overlap_days: 5
 skip_price_update_if_latest_date_is_today: true
 price_update_stale_after_days: 3
+data_health_stale_price_days: 5
 price_download_pause_seconds: 3
 run_dividends_in_daily_fast: false
 run_dividends_in_daily_process: false

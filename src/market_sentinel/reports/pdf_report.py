@@ -19,6 +19,10 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from market_sentinel.analytics.data_health import (
+    check_data_health,
+    format_data_health_line,
+)
 from market_sentinel.config.loader import load_named_config
 from market_sentinel.analytics.trade_candidates import (
     DEFAULT_PORTFOLIO_PRIORITY_ORDER,
@@ -60,10 +64,12 @@ def generate_pdf_report(
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         chart_summary = generate_charts(connection, config_dir=config_dir)
+        data_health_summary = check_data_health(connection, config_dir=config_dir)
         story = _build_report_story(
             selected_date,
             chart_summary,
             settings,
+            data_health_summary,
         )
         document = SimpleDocTemplate(
             str(output_path),
@@ -116,6 +122,7 @@ def _build_report_story(
     report_date: date,
     chart_summary: Optional[Dict[str, Any]] = None,
     settings: Optional[Dict[str, Any]] = None,
+    data_health_summary: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Build reportlab flowables for the PDF."""
     styles = getSampleStyleSheet()
@@ -124,7 +131,12 @@ def _build_report_story(
         chart_summary.get("chart_details", []),
         settings or {},
     )
-    story = _index_page_flowables(included_details, report_date, styles)
+    story = _index_page_flowables(
+        included_details,
+        report_date,
+        styles,
+        data_health_summary,
+    )
     story.extend(_chart_flowables(included_details, styles, include_initial_break=True))
     return story
 
@@ -133,6 +145,7 @@ def _index_page_flowables(
     chart_details: Sequence[Dict[str, Any]],
     report_date: date,
     styles,
+    data_health_summary: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Build the first-page index of selected chart stocks."""
     detail_count = len(chart_details)
@@ -147,11 +160,23 @@ def _index_page_flowables(
         Paragraph("Market Sentinel Crossover Chart Report", styles["Title"]),
         Paragraph(f"Report date: {report_date.isoformat()}", styles["Heading3"]),
         Spacer(1, 8),
+        *(_data_health_flowables(data_health_summary, styles) if data_health_summary else []),
         Paragraph(summary_text, styles["Normal"]),
         *(_daily_action_summary_flowables(chart_details, styles) if detail_count else []),
         *(_portfolio_market_count_flowables(chart_details, styles) if detail_count else []),
         Spacer(1, 12),
         _index_tables(chart_details),
+    ]
+
+
+def _data_health_flowables(
+    data_health_summary: Dict[str, Any],
+    styles,
+) -> List[Any]:
+    """Return the compact first-page data health line."""
+    return [
+        Paragraph(format_data_health_line(data_health_summary), styles["Normal"]),
+        Spacer(1, 6),
     ]
 
 

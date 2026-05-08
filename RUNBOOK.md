@@ -88,12 +88,13 @@ This runs the fast daily steps in order:
 
 1. Load universe CSV files.
 2. Update market data incrementally.
-3. Calculate moving averages incrementally.
-4. Detect crossovers.
-5. Calculate dividend risk flags.
-6. Generate charts.
-7. Generate the PDF report.
-8. Generate the Excel report.
+3. Check data health.
+4. Calculate moving averages incrementally.
+5. Detect crossovers.
+6. Calculate dividend risk flags.
+7. Generate charts.
+8. Generate the PDF report.
+9. Generate the Excel report.
 
 The fast daily process skips dividend history downloads by default. This keeps
 the normal daily run focused on recent prices, moving averages, crossovers, and
@@ -112,6 +113,18 @@ one-off dividend refresh during the daily process, run:
 ```bash
 PYTHONPATH=src python3 scripts/run_daily_process.py --include-dividends
 ```
+
+To check report readiness without running the full daily process, run:
+
+```bash
+PYTHONPATH=src python3 scripts/check_data_health.py
+```
+
+The health check shows total securities by market, missing price histories,
+stale prices, short price histories, and missing moving-average data. It prints
+`Data health: OK`, `Data health: Warning`, or `Data health: Action needed`.
+Warnings do not stop report generation; they make data gaps visible in the
+console, PDF first page, and Excel `Summary` sheet.
 
 ## Run The Weekly Full Process
 
@@ -376,9 +389,11 @@ Excel reports are saved here:
 The Excel workbook is the detailed decision workbook. It keeps the existing
 data tabs and also includes:
 
-- `Summary`: a Daily Action Summary with candidate counts by setup grade,
+- `Summary`: a Daily Action Summary and Data Health section with candidate
+  counts by setup grade,
   portfolio status, market, dividend risk flags, highest score, position-size
-  review checks, and review-priority counts.
+  review checks, review-priority counts, missing/stale data counts, and report
+  readiness status.
 - `Trade Candidates`: all recent crossover candidates, including every action
   grade, sorted from strong buy setups through strong sell setups. Use Trade
   Candidates for daily review. Use Trade Journal for permanent decisions and

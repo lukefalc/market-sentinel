@@ -15,6 +15,7 @@ from market_sentinel.reports.pdf_report import (
     _candidate_card_flowable,
     _chart_flowables,
     _daily_action_summary,
+    _data_health_flowables,
     _index_page_flowables,
     _index_rows,
     _included_chart_details,
@@ -847,17 +848,53 @@ def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
         ),
     ]
 
-    flowables = _index_page_flowables(chart_details, date(2026, 5, 4), styles)
+    data_health = {
+        "status": "Warning",
+        "securities_checked": 3,
+        "stale_price_tickers": [{"ticker": "AAA"}],
+        "no_price_data": [],
+        "insufficient_price_history": [],
+        "missing_moving_average_data": [],
+        "failed_tickers": [],
+    }
+
+    flowables = _index_page_flowables(
+        chart_details,
+        date(2026, 5, 4),
+        styles,
+        data_health,
+    )
 
     assert (
         "Included: Held: 1 | Watchlist: 1 | New: 1 | S&P 500: 1 | FTSE 350: 2"
         in _flowable_text(flowables)
     )
+    assert "Data health: Warning" in _flowable_text(flowables)
     assert "Daily Action Summary" in _flowable_text(flowables)
     assert "Strong Buy" in _flowable_text(flowables)
     assert "Top score" in _flowable_text(flowables)
     assert "Held / Held + Watchlist" in _flowable_text(flowables)
     assert "New candidates" in _flowable_text(flowables)
+
+
+def test_pdf_data_health_line_is_compact() -> None:
+    """The first page should include a compact data health line."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    flowables = _data_health_flowables(
+        {
+            "status": "Action needed",
+            "securities_checked": 4,
+            "stale_price_tickers": [{"ticker": "AAA"}],
+            "no_price_data": [{"ticker": "BBB"}],
+            "insufficient_price_history": [],
+            "missing_moving_average_data": [],
+            "failed_tickers": [],
+        },
+        styles,
+    )
+
+    assert "Data health: Action needed" in _flowable_text(flowables)
+    assert "1 missing price history" in _flowable_text(flowables)
 
 
 def test_pdf_daily_action_summary_counts_candidates(tmp_path: Path) -> None:

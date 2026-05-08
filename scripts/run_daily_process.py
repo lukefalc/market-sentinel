@@ -26,6 +26,10 @@ from market_sentinel.alerts.email_notifier import send_daily_alert_email  # noqa
 from market_sentinel.analytics.crossovers import (  # noqa: E402
     detect_and_store_crossovers,
 )
+from market_sentinel.analytics.data_health import (  # noqa: E402
+    check_data_health,
+    print_data_health_summary,
+)
 from market_sentinel.analytics.dividends import (  # noqa: E402
     calculate_and_store_dividends,
 )
@@ -108,6 +112,7 @@ def daily_steps(include_dividends: Optional[bool] = None) -> List[Step]:
     steps: List[Step] = [
         ("Load universe", _load_universe),
         ("Update market data", _update_market_data_daily),
+        ("Check data health", _check_data_health),
         ("Calculate moving averages", _calculate_moving_averages_daily),
         ("Detect crossovers", detect_and_store_crossovers),
         ("Calculate risk flags", calculate_and_store_risk_flags),
@@ -123,7 +128,7 @@ def daily_steps(include_dividends: Optional[bool] = None) -> List[Step]:
     else:
         dividend_step = ("Calculate dividends: skipped", _skip_dividend_refresh)
 
-    steps.insert(4, dividend_step)
+    steps.insert(5, dividend_step)
     return steps
 
 
@@ -168,6 +173,16 @@ def _update_market_data_daily(connection):
         skip_if_latest_date_is_today=skip_if_latest_date_is_today,
         stale_after_days=stale_after_days,
     )
+
+
+def _check_data_health(connection):
+    """Run the report readiness health check after market data updates."""
+    summary = check_data_health(connection)
+    print_data_health_summary(summary)
+    return {
+        "data_health": summary["status"],
+        "securities_checked": summary["securities_checked"],
+    }
 
 
 def _calculate_moving_averages_daily(connection):

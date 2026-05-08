@@ -13,6 +13,7 @@ from market_sentinel.reports.excel_report import (
     REVIEW_DECISION_VALUES,
     TRADE_CANDIDATE_POSITION_HEADERS,
     TRADE_CANDIDATE_REVIEW_HEADERS,
+    _data_health_summary_rows,
     _position_sizing_values,
     _trade_candidate_summary_rows,
     apply_trade_candidate_position_sizing,
@@ -280,6 +281,10 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert summary_values["S&P 500 candidates"] == 1
     assert summary_values["FTSE 350 candidates"] == 1
     assert summary_values["Candidates with dividend risk flag"] == 1
+    assert "Data Health" in summary_values
+    assert summary_values["Data health status"] in {"Warning", "Action needed"}
+    assert summary_values["Securities checked"] == 2
+    assert summary_values["Tickers with no price data"] == 1
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["B1"].value == "Market"
@@ -497,6 +502,30 @@ def test_excel_daily_action_summary_counts_fake_candidates() -> None:
     assert summary[
         "4. Candidates with position size = 0 requiring stop/risk review"
     ] == 1
+
+
+def test_excel_data_health_summary_rows_include_counts() -> None:
+    """Excel Summary should expose report readiness counts."""
+    rows = _data_health_summary_rows(
+        {
+            "status": "Warning",
+            "securities_checked": 4,
+            "securities_by_market": {"S&P 500": 2, "FTSE 350": 2},
+            "no_price_data": [{"ticker": "AAA"}],
+            "stale_price_tickers": [{"ticker": "BBB"}],
+            "insufficient_price_history": [{"ticker": "CCC"}],
+            "missing_moving_average_data": [{"ticker": "DDD"}],
+            "failed_tickers": [],
+        }
+    )
+    summary = dict(rows)
+
+    assert summary["Data health status"] == "Warning"
+    assert summary["Securities checked"] == 4
+    assert summary["Tickers with no price data"] == 1
+    assert summary["Tickers with stale latest price date"] == 1
+    assert summary["Securities in S&P 500"] == 2
+    assert summary["Securities in FTSE 350"] == 2
 
 
 def test_trade_candidates_sheet_sorts_by_portfolio_status(

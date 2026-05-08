@@ -14,6 +14,7 @@ def test_daily_steps_are_in_expected_order() -> None:
     assert step_names == [
         "Load universe",
         "Update market data",
+        "Check data health",
         "Calculate moving averages",
         "Detect crossovers",
         "Calculate dividends: skipped",
@@ -23,6 +24,34 @@ def test_daily_steps_are_in_expected_order() -> None:
         "Generate Excel",
         "Send daily alert email",
     ]
+
+
+def test_daily_process_checks_data_health_after_market_data(monkeypatch) -> None:
+    """The daily process should run data health before downstream analysis."""
+    calls = []
+
+    def fake_check_data_health(connection):
+        calls.append(("check", connection))
+        return {
+            "status": "OK",
+            "securities_checked": 2,
+            "securities_by_market": {"S&P 500": 1, "FTSE 350": 1},
+        }
+
+    def fake_print_data_health_summary(summary):
+        calls.append(("print", summary["status"]))
+
+    monkeypatch.setattr(run_daily_process, "check_data_health", fake_check_data_health)
+    monkeypatch.setattr(
+        run_daily_process,
+        "print_data_health_summary",
+        fake_print_data_health_summary,
+    )
+
+    result = run_daily_process._check_data_health("fake connection")
+
+    assert result == {"data_health": "OK", "securities_checked": 2}
+    assert calls == [("check", "fake connection"), ("print", "OK")]
 
 
 def test_daily_process_skips_dividends_by_default(monkeypatch, capsys) -> None:

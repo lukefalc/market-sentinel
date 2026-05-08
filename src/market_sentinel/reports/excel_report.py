@@ -16,6 +16,10 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from market_sentinel.analytics.data_health import (
+    check_data_health,
+    format_data_health_line,
+)
 from market_sentinel.analytics.trade_candidates import (
     build_trade_candidate,
     portfolio_priority_rank,
@@ -182,11 +186,13 @@ def generate_excel_report(
         )
         _write_position_sizing_sheet(workbook, settings)
         _write_trade_journal_sheet(workbook)
+        data_health_summary = check_data_health(connection, config_dir=config_dir)
         _write_summary_sheet(
             summary_sheet,
             connection,
             limit_notes,
             trade_candidate_data[1],
+            data_health_summary,
         )
 
         workbook.save(output_path)
@@ -296,6 +302,7 @@ def _write_summary_sheet(
     connection: duckdb.DuckDBPyConnection,
     limit_notes: Sequence[str],
     trade_candidate_rows: Optional[Sequence[Sequence[Any]]] = None,
+    data_health_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write the Summary worksheet."""
     rows = [
@@ -314,6 +321,9 @@ def _write_summary_sheet(
     if trade_candidate_rows is not None:
         rows.extend(_trade_candidate_summary_rows(trade_candidate_rows))
 
+    if data_health_summary is not None:
+        rows.extend(_data_health_summary_rows(data_health_summary))
+
     if limit_notes:
         rows.append(("", ""))
         rows.append(("Report Notes", ""))
@@ -321,6 +331,48 @@ def _write_summary_sheet(
             rows.append((note, ""))
 
     _write_rows(sheet, rows)
+
+
+def _data_health_summary_rows(
+    data_health_summary: Dict[str, Any],
+) -> List[Sequence[Any]]:
+    """Return Data Health rows for the Summary worksheet."""
+    market_counts = data_health_summary.get("securities_by_market") or {}
+    rows: List[Sequence[Any]] = [
+        ("", ""),
+        ("Data Health", ""),
+        ("Data health status", data_health_summary.get("status", "Warning")),
+        (
+            "Data health summary",
+            format_data_health_line(data_health_summary),
+        ),
+        ("Securities checked", data_health_summary.get("securities_checked", 0)),
+        (
+            "Tickers with no price data",
+            len(data_health_summary.get("no_price_data") or []),
+        ),
+        (
+            "Tickers with stale latest price date",
+            len(data_health_summary.get("stale_price_tickers") or []),
+        ),
+        (
+            "Tickers with fewer than 180 price rows",
+            len(data_health_summary.get("insufficient_price_history") or []),
+        ),
+        (
+            "Tickers with missing moving average data",
+            len(data_health_summary.get("missing_moving_average_data") or []),
+        ),
+        (
+            "Tickers failed in latest update",
+            len(data_health_summary.get("failed_tickers") or []),
+        ),
+    ]
+
+    for market, count in sorted(market_counts.items()):
+        rows.append((f"Securities in {market}", count))
+
+    return rows
 
 
 def _trade_candidate_summary_rows(
