@@ -324,6 +324,14 @@ def _write_summary_sheet(
     if data_health_summary is not None:
         rows.extend(_data_health_summary_rows(data_health_summary))
 
+    if trade_candidate_rows is not None:
+        rows.extend(
+            _review_priority_summary_rows(
+                trade_candidate_rows,
+                data_health_summary,
+            )
+        )
+
     if limit_notes:
         rows.append(("", ""))
         rows.append(("Report Notes", ""))
@@ -373,6 +381,140 @@ def _data_health_summary_rows(
         rows.append((f"Securities in {market}", count))
 
     return rows
+
+
+def _review_priority_summary_rows(
+    trade_candidate_rows: Sequence[Sequence[Any]],
+    data_health_summary: Optional[Dict[str, Any]] = None,
+) -> List[Sequence[Any]]:
+    """Return detailed Review Priorities rows for the Summary worksheet."""
+    priority_rows = _review_priority_rows_from_trade_candidates(
+        trade_candidate_rows,
+        data_health_summary,
+    )
+    if not priority_rows:
+        return []
+
+    return [
+        ("", ""),
+        ("Review Priorities", ""),
+        (
+            "Priority type",
+            "Ticker",
+            "Name",
+            "Market",
+            "Action grade",
+            "Score",
+            "Short reason",
+        ),
+        *priority_rows,
+    ]
+
+
+def _review_priority_rows_from_trade_candidates(
+    trade_candidate_rows: Sequence[Sequence[Any]],
+    data_health_summary: Optional[Dict[str, Any]] = None,
+) -> List[Sequence[Any]]:
+    """Return ordered Review Priorities rows from Trade Candidates data."""
+    priority_groups = [
+        (
+            "Held + Strong Sell",
+            _excel_is_held_strong_sell,
+            "Held stock has Strong Sell Setup.",
+        ),
+        (
+            "Held + dividend risk",
+            _excel_is_held_dividend_risk,
+            "Dividend risk flag present.",
+        ),
+        (
+            "Watchlist + Strong Buy",
+            _excel_is_watchlist_strong_buy,
+            "Watchlist stock has Strong Buy Setup.",
+        ),
+        (
+            "New Strong Buy >= 7",
+            _excel_is_new_high_score_strong_buy,
+            "New Strong Buy candidate with score >= 7.",
+        ),
+        (
+            "Needs risk/stop review",
+            _excel_has_zero_or_blank_position_size,
+            "Needs risk/stop review.",
+        ),
+    ]
+    priority_rows: List[Sequence[Any]] = []
+
+    for priority_type, predicate, reason in priority_groups:
+        matching_rows = sorted(
+            [row for row in trade_candidate_rows if predicate(row)],
+            key=lambda row: -(_numeric_value(row[5]) or 0),
+        )
+        for row in matching_rows:
+            priority_rows.append(
+                (
+                    priority_type,
+                    row[0] or "",
+                    row[1] or "",
+                    row[2] or "",
+                    row[4] or "",
+                    row[5] or "",
+                    reason,
+                )
+            )
+
+    if data_health_summary and data_health_summary.get("status") not in {None, "OK"}:
+        priority_rows.append(
+            (
+                "Data health warning",
+                "",
+                "",
+                "",
+                "",
+                "",
+                format_data_health_line(data_health_summary),
+            )
+        )
+
+    return priority_rows
+
+
+def _excel_is_held_strong_sell(row: Sequence[Any]) -> bool:
+    return _excel_portfolio_status(row) in {"Held", "Held + Watchlist"} and row[4] == (
+        "Strong Sell Setup"
+    )
+
+
+def _excel_is_held_dividend_risk(row: Sequence[Any]) -> bool:
+    return (
+        _excel_portfolio_status(row) in {"Held", "Held + Watchlist"}
+        and bool(row[13])
+    )
+
+
+def _excel_is_watchlist_strong_buy(row: Sequence[Any]) -> bool:
+    return _excel_portfolio_status(row) == "Watchlist" and row[4] == (
+        "Strong Buy Setup"
+    )
+
+
+def _excel_is_new_high_score_strong_buy(row: Sequence[Any]) -> bool:
+    score = _numeric_value(row[5])
+    return (
+        _excel_portfolio_status(row) == "New"
+        and row[4] == "Strong Buy Setup"
+        and score is not None
+        and score >= 7
+    )
+
+
+def _excel_has_zero_or_blank_position_size(row: Sequence[Any]) -> bool:
+    position_size = row[22] if len(row) > 22 else None
+    return position_size in {None, "", 0, 0.0}
+
+
+def _excel_portfolio_status(row: Sequence[Any]) -> str:
+    return str(row[14] or "New") if len(row) > 14 else "New"
 
 
 def _trade_candidate_summary_rows(

@@ -159,6 +159,11 @@ stock gets one landscape page with a trend chart and a short explanation of why
 that stock was selected. The first page is a compact index of the stocks
 included in the chart report. The index, chart page title, and candidate card
 show each stock's market marker, such as `S&P 500` or `FTSE 350`.
+The first page also includes Review Priorities, highlighting held strong-sell
+setups, held dividend-risk names, watchlist strong-buy setups, new high-score
+strong buys, zero-size risk reviews, and data-health warnings.
+Chart pages for Review Priority stocks appear first after the summary page, so
+the most important reviews are at the front of the PDF.
 
 The PDF selects stocks with moving-average crossovers from the past 7 days,
 up to the configured chart limit. The Excel workbook keeps the fuller crossover
@@ -400,11 +405,12 @@ Excel reports are saved here:
 The Excel workbook is the detailed decision workbook. It keeps the existing
 data tabs and also includes:
 
-- `Summary`: a Daily Action Summary and Data Health section with candidate
+- `Summary`: a Daily Action Summary, Review Priorities table, and Data Health
+  section with candidate
   counts by setup grade,
   portfolio status, market, dividend risk flags, highest score, position-size
-  review checks, review-priority counts, missing/stale data counts, and report
-  readiness status.
+  review checks, priority rows, missing/stale data counts, and report readiness
+  status.
 - `Trade Candidates`: all recent crossover candidates, including every action
   grade, sorted from strong buy setups through strong sell setups. Use Trade
   Candidates for daily review. Use Trade Journal for permanent decisions and

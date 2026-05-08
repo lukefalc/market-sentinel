@@ -163,6 +163,11 @@ def _index_page_flowables(
         *(_data_health_flowables(data_health_summary, styles) if data_health_summary else []),
         Paragraph(summary_text, styles["Normal"]),
         *(_daily_action_summary_flowables(chart_details, styles) if detail_count else []),
+        *(
+            _review_priorities_flowables(chart_details, data_health_summary, styles)
+            if detail_count or data_health_summary
+            else []
+        ),
         *(_portfolio_market_count_flowables(chart_details, styles) if detail_count else []),
         Spacer(1, 12),
         _index_tables(chart_details),
@@ -290,6 +295,218 @@ def _daily_action_summary(chart_details: Sequence[Dict[str, Any]]) -> Dict[str, 
     return summary
 
 
+def _review_priorities_flowables(
+    chart_details: Sequence[Dict[str, Any]],
+    data_health_summary: Optional[Dict[str, Any]],
+    styles,
+) -> List[Any]:
+    """Return a compact first-page Review Priorities table."""
+    rows = _review_priority_rows(chart_details, data_health_summary, limit=8)
+    if not rows:
+        return []
+
+    table_rows = [
+        ["Priority type", "Ticker", "Name", "Market", "Action grade", "Score", "Reason"],
+        *rows,
+    ]
+    table = Table(
+        table_rows,
+        colWidths=[92, 42, 98, 54, 72, 34, 348],
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9EAF7")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                ("FONTSIZE", (0, 0), (-1, -1), 6.4),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return [
+        Spacer(1, 8),
+        Paragraph("Review Priorities", styles["Heading3"]),
+        table,
+    ]
+
+
+def _review_priority_rows(
+    chart_details: Sequence[Dict[str, Any]],
+    data_health_summary: Optional[Dict[str, Any]] = None,
+    limit: int = 8,
+) -> List[List[Any]]:
+    """Return ordered Review Priorities rows for the PDF first page."""
+    rows: List[List[Any]] = []
+
+    for rank, priority_type, predicate, reason in _review_priority_rules():
+        group_details = sorted(
+            [detail for detail in chart_details if predicate(detail)],
+            key=_review_priority_group_sort_key,
+        )
+        for chart_detail in group_details:
+            if len(rows) >= limit:
+                return rows
+            if any(row[1] == chart_detail.get("ticker", "") for row in rows):
+                continue
+            candidate = chart_detail.get("trade_candidate") or chart_detail
+            rows.append(
+                [
+                    priority_type,
+                    chart_detail.get("ticker", candidate.get("ticker", "")),
+                    _shorten_name(
+                        chart_detail.get(
+                            "company_name",
+                            candidate.get("company_name", ""),
+                        ),
+                        max_length=24,
+                    ),
+                    _market_marker(
+                        chart_detail.get("market", candidate.get("market")),
+                        chart_detail.get("ticker", candidate.get("ticker", "")),
+                    ),
+                    candidate.get("action_grade", "Track Only"),
+                    _score_text(candidate.get("score")),
+                    reason,
+                ]
+            )
+
+    if (
+        len(rows) < limit
+        and data_health_summary
+        and data_health_summary.get("status") not in {None, "OK"}
+    ):
+        rows.append(
+            [
+                "Data health warning",
+                "",
+                "",
+                "",
+                "",
+                "",
+                format_data_health_line(data_health_summary),
+            ]
+        )
+
+    return rows
+
+
+def _review_priority_rules() -> List[tuple]:
+    """Return ordered PDF Review Priority rules."""
+    return [
+        (
+            0,
+            "Held + Strong Sell",
+            _is_held_strong_sell,
+            "Held stock with Strong Sell Setup",
+        ),
+        (
+            1,
+            "Held + dividend risk",
+            _is_held_dividend_risk,
+            "Held stock with dividend risk flag",
+        ),
+        (
+            2,
+            "Watchlist + Strong Buy",
+            _is_watchlist_strong_buy,
+            "Watchlist stock with Strong Buy Setup",
+        ),
+        (
+            3,
+            "New Strong Buy >= 7",
+            _is_new_high_score_strong_buy,
+            "New Strong Buy candidate with score >= 7",
+        ),
+        (
+            4,
+            "Needs risk/stop review",
+            _has_zero_or_blank_position_size,
+            "Position size requires stop/risk review",
+        ),
+    ]
+
+
+def _review_priority_match(chart_detail: Dict[str, Any]) -> Optional[tuple]:
+    """Return the first Review Priority rule matched by a chart detail."""
+    for rank, label, predicate, reason in _review_priority_rules():
+        if predicate(chart_detail):
+            return rank, label, reason
+    return None
+
+
+def _review_priority_group_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort candidates within one Review Priority group."""
+    crossover_date = _chart_crossover_date(chart_detail)
+    crossover_ordinal = (
+        crossover_date.toordinal() if hasattr(crossover_date, "toordinal") else 0
+    )
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return (
+        -_score_value(candidate.get("score")),
+        -crossover_ordinal,
+        chart_detail.get("ticker", ""),
+    )
+
+
+def _review_priority_chart_sort_key(chart_detail: Dict[str, Any]) -> tuple:
+    """Sort Review Priority chart pages ahead of non-priority pages."""
+    match = _review_priority_match(chart_detail)
+    rank = match[0] if match else 999
+    return (rank, *_review_priority_group_sort_key(chart_detail))
+
+
+def _is_held_strong_sell(chart_detail: Dict[str, Any]) -> bool:
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return (
+        _candidate_portfolio_status(chart_detail) in {"Held", "Held + Watchlist"}
+        and candidate.get("action_grade") == "Strong Sell Setup"
+    )
+
+
+def _is_held_dividend_risk(chart_detail: Dict[str, Any]) -> bool:
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return (
+        _candidate_portfolio_status(chart_detail) in {"Held", "Held + Watchlist"}
+        and bool(candidate.get("dividend_risk_flag"))
+    )
+
+
+def _is_watchlist_strong_buy(chart_detail: Dict[str, Any]) -> bool:
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return (
+        _candidate_portfolio_status(chart_detail) == "Watchlist"
+        and candidate.get("action_grade") == "Strong Buy Setup"
+    )
+
+
+def _is_new_high_score_strong_buy(chart_detail: Dict[str, Any]) -> bool:
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    return (
+        _candidate_portfolio_status(chart_detail) == "New"
+        and candidate.get("action_grade") == "Strong Buy Setup"
+        and _score_value(candidate.get("score")) >= 7
+    )
+
+
+def _has_zero_or_blank_position_size(chart_detail: Dict[str, Any]) -> bool:
+    candidate = chart_detail.get("trade_candidate") or chart_detail
+    for key in ("position_size", "suggested_position_size"):
+        if key not in candidate:
+            continue
+        value = candidate.get(key)
+        return value in {None, "", 0, 0.0}
+    return False
+
+
+def _score_text(score: Any) -> str:
+    """Return a compact score string."""
+    numeric_score = _score_value(score)
+    return f"{numeric_score:g}" if score not in {None, ""} else ""
+
+
 def _portfolio_market_count_flowables(
     chart_details: Sequence[Dict[str, Any]],
     styles,
@@ -333,9 +550,9 @@ def _portfolio_market_count_flowables(
 
 def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
     """Return two side-by-side compact index tables."""
-    grouped_rows = _grouped_index_rows(chart_details)
-    left_rows = grouped_rows[:25]
-    right_rows = grouped_rows[25:50]
+    index_rows = _index_rows(chart_details)
+    left_rows = index_rows[:25]
+    right_rows = index_rows[25:50]
     index_table = Table(
         [[_compact_index_table(left_rows), _compact_index_table(right_rows)]],
         colWidths=[370, 370],
@@ -357,6 +574,7 @@ def _index_tables(chart_details: Sequence[Dict[str, Any]]) -> Table:
 def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
     """Return one compact index table for up to 25 stocks."""
     headers = [
+        "Pri",
         "Ticker",
         "Name",
         "Market",
@@ -368,7 +586,7 @@ def _compact_index_table(rows: Sequence[Sequence[Any]]) -> Table:
     ]
     table = Table(
         [headers] + list(rows),
-        colWidths=[36, 70, 50, 64, 40, 46, 28, 36],
+        colWidths=[20, 34, 58, 48, 58, 38, 44, 26, 44],
     )
     table.setStyle(
         TableStyle(
@@ -403,7 +621,7 @@ def _grouped_index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[An
         ]
         if not group_details:
             continue
-        grouped_rows.append([label, "", "", "", "", "", "", ""])
+        grouped_rows.append(["", label, "", "", "", "", "", "", ""])
         grouped_rows.extend(_index_rows(group_details))
 
     return grouped_rows
@@ -421,8 +639,9 @@ def _index_rows(chart_details: Sequence[Dict[str, Any]]) -> List[List[Any]]:
 
         rows.append(
             [
+                "Yes" if _review_priority_match(chart_detail) else "",
                 chart_detail.get("ticker", ""),
-                _shorten_name(chart_detail.get("company_name", ""), max_length=17),
+                _shorten_name(chart_detail.get("company_name", ""), max_length=14),
                 _market_marker(
                     chart_detail.get("market"),
                     chart_detail.get("ticker", ""),
@@ -524,6 +743,18 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
     candidate = chart_detail.get("trade_candidate") or _candidate_from_chart_detail(
         chart_detail
     )
+    priority_reason = _review_priority_reason_text(chart_detail)
+    setup_text = (
+        "Candidate review | <b>Action grade: "
+        f"{_not_available(candidate.get('action_grade'))}</b> | "
+        f"Score: {_not_available(candidate.get('score'))} / "
+        f"{_not_available(candidate.get('max_score', 10))} | "
+        f"Market: {_market_marker(candidate.get('market'), candidate.get('ticker', ''))} | "
+        f"Portfolio status: {_portfolio_status_text(candidate)} | "
+    )
+    if priority_reason:
+        setup_text += f"<b>Review priority: {priority_reason}</b> | "
+    setup_text += "Rule-based setup grade only. These are not trading instructions."
     card_style = ParagraphStyle(
         "CandidateCardCompact",
         parent=styles["Normal"],
@@ -540,16 +771,7 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
     rows = [
         [
             Paragraph("Setup", label_style),
-            Paragraph(
-                "Candidate review | <b>Action grade: "
-                f"{_not_available(candidate.get('action_grade'))}</b> | "
-                f"Score: {_not_available(candidate.get('score'))} / "
-                f"{_not_available(candidate.get('max_score', 10))} | "
-                f"Market: {_market_marker(candidate.get('market'), candidate.get('ticker', ''))} | "
-                f"Portfolio status: {_portfolio_status_text(candidate)} | "
-                "Rule-based setup grade only. These are not trading instructions.",
-                card_style,
-            ),
+            Paragraph(setup_text, card_style),
         ],
         [
             Paragraph("Signal", label_style),
@@ -605,6 +827,12 @@ def _candidate_card_flowable(chart_detail: Dict[str, Any], styles) -> Table:
     return table
 
 
+def _review_priority_reason_text(chart_detail: Dict[str, Any]) -> str:
+    """Return the compact Review Priority reason for a candidate card."""
+    match = _review_priority_match(chart_detail)
+    return match[2] if match else ""
+
+
 def _candidate_from_chart_detail(chart_detail: Dict[str, Any]) -> Dict[str, Any]:
     """Build a minimal card model when charts were mocked in tests."""
     first_signal = (chart_detail.get("signals") or [{}])[0]
@@ -655,11 +883,29 @@ def _sorted_chart_details(
         for chart_detail in chart_details
         if _candidate_action_grade(chart_detail) in _include_setup_grades(include_grades)
     ]
-    return _market_balanced_chart_details(
+    selected = _market_balanced_chart_details(
         filtered_details,
         max_total=max_total,
         max_per_market=max_per_market,
     )
+    return _review_priority_ordered_chart_details(selected)
+
+
+def _review_priority_ordered_chart_details(
+    chart_details: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Move Review Priority chart pages to the front without duplication."""
+    priority_details = [
+        chart_detail for chart_detail in chart_details if _review_priority_match(chart_detail)
+    ]
+    priority_details.sort(key=_review_priority_chart_sort_key)
+    priority_tickers = {detail.get("ticker", "") for detail in priority_details}
+    remaining_details = [
+        chart_detail
+        for chart_detail in chart_details
+        if chart_detail.get("ticker", "") not in priority_tickers
+    ]
+    return priority_details + remaining_details
 
 
 def _included_chart_details(

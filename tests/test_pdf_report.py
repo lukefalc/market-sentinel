@@ -19,6 +19,8 @@ from market_sentinel.reports.pdf_report import (
     _index_page_flowables,
     _index_rows,
     _included_chart_details,
+    _review_priority_rows,
+    _review_priority_ordered_chart_details,
     _review_levels_text,
     _selection_reason_text,
     _sorted_chart_details,
@@ -567,8 +569,8 @@ def test_pdf_index_rows_split_into_two_groups_of_25(tmp_path: Path) -> None:
 
     assert len(left_rows) == 25
     assert len(right_rows) == 25
-    assert left_rows[0][0] == "T01"
-    assert right_rows[0][0] == "T26"
+    assert left_rows[0][1] == "T01"
+    assert right_rows[0][1] == "T26"
 
 
 def test_pdf_index_uses_same_order_as_chart_pages(tmp_path: Path) -> None:
@@ -581,7 +583,7 @@ def test_pdf_index_uses_same_order_as_chart_pages(tmp_path: Path) -> None:
 
     rows = _index_rows(chart_details)
 
-    assert [row[0] for row in rows] == ["NEW", "BUL", "OLD"]
+    assert [row[1] for row in rows] == ["NEW", "BUL", "OLD"]
 
 
 def test_pdf_pages_sort_by_action_grade(tmp_path: Path) -> None:
@@ -644,7 +646,7 @@ def test_pdf_filter_includes_strong_buy_and_strong_sell(tmp_path: Path) -> None:
 
     included = _included_chart_details(chart_details, {})
 
-    assert [detail["ticker"] for detail in included] == ["STRB", "STRS"]
+    assert [detail["ticker"] for detail in included] == ["STRS", "STRB"]
 
 
 def test_pdf_index_only_lists_included_grades(tmp_path: Path) -> None:
@@ -657,9 +659,9 @@ def test_pdf_index_only_lists_included_grades(tmp_path: Path) -> None:
     included = _included_chart_details(chart_details, {})
     rows = _index_rows(included)
 
-    assert [row[0] for row in rows] == ["STRB", "STRS"]
-    assert {row[2] for row in rows} == {"S&P 500"}
-    assert {row[3] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
+    assert [row[1] for row in rows] == ["STRS", "STRB"]
+    assert {row[3] for row in rows} == {"S&P 500"}
+    assert {row[4] for row in rows} == {"Strong Buy Setup", "Strong Sell Setup"}
 
 
 def test_pdf_selection_limits_each_market_when_both_have_enough(
@@ -789,10 +791,10 @@ def test_pdf_ordering_respects_portfolio_priority_before_score(
     included = _included_chart_details(chart_details, {})
 
     assert [detail["ticker"] for detail in included] == [
-        "BOTH",
-        "HELD",
         "WATCH",
         "NEW",
+        "BOTH",
+        "HELD",
     ]
 
 
@@ -819,7 +821,7 @@ def test_pdf_selection_prefers_strong_buy_when_score_is_equal(
 
     included = _included_chart_details(chart_details, {})
 
-    assert [detail["ticker"] for detail in included] == ["BUY", "SELL"]
+    assert [detail["ticker"] for detail in included] == ["SELL", "BUY"]
 
 
 def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
@@ -873,8 +875,9 @@ def test_pdf_index_includes_market_count_summary(tmp_path: Path) -> None:
     assert "Daily Action Summary" in _flowable_text(flowables)
     assert "Strong Buy" in _flowable_text(flowables)
     assert "Top score" in _flowable_text(flowables)
-    assert "Held / Held + Watchlist" in _flowable_text(flowables)
-    assert "New candidates" in _flowable_text(flowables)
+    assert "Review Priorities" in _flowable_text(flowables)
+    assert "Pri" in _flowable_text(flowables)
+    assert "Priority" in _flowable_text(flowables)
 
 
 def test_pdf_data_health_line_is_compact() -> None:
@@ -943,6 +946,140 @@ def test_pdf_daily_action_summary_counts_candidates(tmp_path: Path) -> None:
     assert summary["dividend_risk_flags"] == 1
 
 
+def test_pdf_review_priorities_include_attention_groups(tmp_path: Path) -> None:
+    """PDF priorities should surface the highest-attention candidate groups."""
+    held_sell = sample_chart_detail(
+        "SELL",
+        tmp_path / "SELL.png",
+        action_grade="Strong Sell Setup",
+        score=8,
+        portfolio_status="Held",
+    )
+    held_risk = sample_chart_detail(
+        "RISK",
+        tmp_path / "RISK.png",
+        action_grade="Strong Buy Setup",
+        score=6,
+        portfolio_status="Held",
+    )
+    held_risk["trade_candidate"]["dividend_risk_flag"] = "DIVIDEND_TRAP_RISK"
+    watch_buy = sample_chart_detail(
+        "WATCH",
+        tmp_path / "WATCH.png",
+        action_grade="Strong Buy Setup",
+        score=7,
+        portfolio_status="Watchlist",
+    )
+    new_buy = sample_chart_detail(
+        "NEW",
+        tmp_path / "NEW.png",
+        action_grade="Strong Buy Setup",
+        score=9,
+        portfolio_status="New",
+    )
+    zero_size = sample_chart_detail(
+        "ZERO",
+        tmp_path / "ZERO.png",
+        action_grade="Strong Buy Setup",
+        score=5,
+        portfolio_status="New",
+    )
+    zero_size["trade_candidate"]["position_size"] = 0
+
+    rows = _review_priority_rows(
+        [new_buy, watch_buy, zero_size, held_risk, held_sell],
+        {
+            "status": "Warning",
+            "securities_checked": 5,
+            "stale_price_tickers": [{"ticker": "AAA"}],
+            "no_price_data": [],
+            "insufficient_price_history": [],
+            "missing_moving_average_data": [],
+            "failed_tickers": [],
+        },
+    )
+    priority_types = [row[0] for row in rows]
+
+    assert priority_types == [
+        "Held + Strong Sell",
+        "Held + dividend risk",
+        "Watchlist + Strong Buy",
+        "New Strong Buy >= 7",
+        "Needs risk/stop review",
+        "Data health warning",
+    ]
+
+
+def test_review_priority_chart_pages_come_before_remaining_pages(
+    tmp_path: Path,
+) -> None:
+    """Review Priority chart pages should be first without duplicate pages."""
+    normal = sample_chart_detail(
+        "NORMAL",
+        tmp_path / "NORMAL.png",
+        action_grade="Strong Sell Setup",
+        score=10,
+        portfolio_status="New",
+        holding_quantity="",
+    )
+    watch_buy = sample_chart_detail(
+        "WATCH",
+        tmp_path / "WATCH.png",
+        action_grade="Strong Buy Setup",
+        score=7,
+        portfolio_status="Watchlist",
+        holding_quantity="",
+    )
+    held_sell = sample_chart_detail(
+        "HELD",
+        tmp_path / "HELD.png",
+        action_grade="Strong Sell Setup",
+        score=6,
+        portfolio_status="Held",
+    )
+    duplicate_priority = sample_chart_detail(
+        "DUP",
+        tmp_path / "DUP.png",
+        action_grade="Strong Sell Setup",
+        score=8,
+        portfolio_status="Held",
+    )
+    duplicate_priority["trade_candidate"]["dividend_risk_flag"] = (
+        "DIVIDEND_TRAP_RISK"
+    )
+
+    ordered = _review_priority_ordered_chart_details(
+        [normal, watch_buy, held_sell, duplicate_priority]
+    )
+
+    assert [detail["ticker"] for detail in ordered] == [
+        "DUP",
+        "HELD",
+        "WATCH",
+        "NORMAL",
+    ]
+    assert len({detail["ticker"] for detail in ordered}) == len(ordered)
+
+
+def test_priority_reason_appears_on_priority_candidate_card(tmp_path: Path) -> None:
+    """Priority candidate cards should show the compact review reason."""
+    styles = pdf_report_module.getSampleStyleSheet()
+    chart_detail = sample_chart_detail(
+        "WATCH",
+        tmp_path / "WATCH.png",
+        action_grade="Strong Buy Setup",
+        portfolio_status="Watchlist",
+        holding_quantity="",
+    )
+
+    card = _candidate_card_flowable(chart_detail, styles)
+
+    assert (
+        "Review priority: Watchlist stock with Strong Buy Setup"
+        in _flowable_text(card)
+    )
+
+
 def test_pdf_index_order_matches_market_balanced_chart_page_order(
     tmp_path: Path,
 ) -> None:
@@ -956,8 +1093,8 @@ def test_pdf_index_order_matches_market_balanced_chart_page_order(
     included = _included_chart_details(chart_details, {})
     rows = _index_rows(included)
 
-    assert [row[0] for row in rows] == [detail["ticker"] for detail in included]
-    assert [row[0] for row in rows] == ["SPHIGH", "FTHIGH.L", "SPLOW", "FTLOW.L"]
+    assert [row[1] for row in rows] == [detail["ticker"] for detail in included]
+    assert [row[1] for row in rows] == ["SPHIGH", "FTHIGH.L", "SPLOW", "FTLOW.L"]
 
 
 def test_pdf_empty_state_message_when_no_strong_setups(tmp_path: Path) -> None:

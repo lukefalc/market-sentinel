@@ -15,6 +15,7 @@ from market_sentinel.reports.excel_report import (
     TRADE_CANDIDATE_REVIEW_HEADERS,
     _data_health_summary_rows,
     _position_sizing_values,
+    _review_priority_summary_rows,
     _trade_candidate_summary_rows,
     apply_trade_candidate_position_sizing,
     generate_excel_report,
@@ -285,6 +286,7 @@ def test_generate_excel_report_creates_expected_workbook(tmp_path: Path) -> None
     assert summary_values["Data health status"] in {"Warning", "Action needed"}
     assert summary_values["Securities checked"] == 2
     assert summary_values["Tickers with no price data"] == 1
+    assert "Review Priorities" in summary_values
     assert workbook["Securities"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["A2"].value == "AAA"
     assert workbook["Latest Prices"]["B1"].value == "Market"
@@ -526,6 +528,174 @@ def test_excel_data_health_summary_rows_include_counts() -> None:
     assert summary["Tickers with stale latest price date"] == 1
     assert summary["Securities in S&P 500"] == 2
     assert summary["Securities in FTSE 350"] == 2
+
+
+def test_excel_review_priorities_include_attention_groups() -> None:
+    """Excel Summary Review Priorities should include all attention groups."""
+    rows = [
+        (
+            "SELL",
+            "Held Sell",
+            "S&P 500",
+            "Bearish",
+            "Strong Sell Setup",
+            8,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "",
+            "Held",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            10,
+            1000,
+            "",
+        ),
+        (
+            "RISK",
+            "Held Risk",
+            "S&P 500",
+            "Bullish",
+            "Strong Buy Setup",
+            6,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "DIVIDEND_TRAP_RISK",
+            "Held",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            10,
+            1000,
+            "",
+        ),
+        (
+            "WATCH",
+            "Watch Buy",
+            "FTSE 350",
+            "Bullish",
+            "Strong Buy Setup",
+            7,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "",
+            "Watchlist",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            10,
+            1000,
+            "",
+        ),
+        (
+            "NEW",
+            "New Buy",
+            "FTSE 350",
+            "Bullish",
+            "Strong Buy Setup",
+            9,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "",
+            "New",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            10,
+            1000,
+            "",
+        ),
+        (
+            "ZERO",
+            "Zero Size",
+            "S&P 500",
+            "Bullish",
+            "Buy Setup",
+            5,
+            None,
+            "Today",
+            "",
+            100,
+            95,
+            90,
+            80,
+            "",
+            "New",
+            "",
+            "",
+            "",
+            100,
+            90,
+            10,
+            100,
+            0,
+            0,
+            "Check stop",
+        ),
+    ]
+    priority_rows = _review_priority_summary_rows(
+        rows,
+        {
+            "status": "Warning",
+            "securities_checked": 5,
+            "securities_by_market": {"S&P 500": 3, "FTSE 350": 2},
+            "no_price_data": [],
+            "stale_price_tickers": [{"ticker": "AAA"}],
+            "insufficient_price_history": [],
+            "missing_moving_average_data": [],
+            "failed_tickers": [],
+        },
+    )
+    priority_types = [
+        row[0]
+        for row in priority_rows
+        if row and row[0] not in {"", "Review Priorities", "Priority type"}
+    ]
+
+    assert priority_types == [
+        "Held + Strong Sell",
+        "Held + dividend risk",
+        "Watchlist + Strong Buy",
+        "New Strong Buy >= 7",
+        "Needs risk/stop review",
+        "Data health warning",
+    ]
 
 
 def test_trade_candidates_sheet_sorts_by_portfolio_status(
