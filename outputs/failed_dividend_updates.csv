@@ -1,0 +1,2 @@
+ticker,reason,details,date
+PPL,network_error,Could not download dividends for PPL. Check the ticker symbol and your internet connection. Details: 'NoneType' object is not subscriptable,2026-05-13
